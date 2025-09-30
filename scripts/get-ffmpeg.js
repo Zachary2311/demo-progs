@@ -11,7 +11,7 @@ mkdirSync(destDir, { recursive: true });
 // Prefer a gzip archive so we don't need xz on the build image.
 // Use a mirror that provides .tar.gz for Linux x64 static builds.
 // (If your mirror only has .tar.xz, switch to Option 1 or 2 above.)
-const url = process.env.FFMPEG_TARGZ_URL || 'https://evermeet.cx/ffmpeg/getrelease/ffmpeg-6.1.1-amd64.tar.gz';
+const url = process.env.FFMPEG_TARGZ_URL || 'https://www.ffmpeg.org/releases/ffmpeg-8.0.tar.gz';
 
 function fetch(url) {
   return new Promise((resolve, reject) => {
