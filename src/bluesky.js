@@ -3,6 +3,7 @@ import path from 'path';
 import { finished } from 'stream/promises';
 import { once } from 'node:events';
 import { createDecipheriv } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { AtpAgent } from '@atproto/api';
 import { Parser as M3U8Parser } from 'm3u8-parser';
 import { config } from './config.js';
@@ -144,16 +145,15 @@ function detectPlaylistContainer(manifest) {
   return { type: 'ts', extension: 'ts', mimeType: 'video/mp2t' };
 }
 
-function buildInitSegmentKey(map) {
+function buildInitSegmentKey(map, resolvedRange) {
   if (!map?.uri) {
     return null;
   }
-  if (!map.byterange) {
+  if (!resolvedRange) {
     return map.uri;
   }
-  const parsed = parseByteRange(map.byterange, map.uri);
-  const offsetPart = parsed.offset !== undefined ? parsed.offset : '';
-  return `${map.uri}#${parsed.length}@${offsetPart}`;
+  const offsetPart = resolvedRange.offset !== undefined ? resolvedRange.offset : '';
+  return `${map.uri}#${resolvedRange.length}@${offsetPart}`;
 }
 
 async function downloadFromPlaylist(playlistUrl) {
@@ -182,7 +182,6 @@ async function downloadFromPlaylist(playlistUrl) {
   const filePath = path.join(tempDir, fileName);
   const fileStream = createWriteStream(filePath);
   let activeInitKey = null;
-  let lastMapReference = null;
   const keyCache = new Map();
   const byteRangeState = new Map();
   const mapByteRangeState = new Map();
@@ -192,20 +191,15 @@ async function downloadFromPlaylist(playlistUrl) {
       const segment = segments[index];
       if (segment.discontinuity) {
         activeInitKey = null;
-        lastMapReference = null;
         byteRangeState.clear();
         mapByteRangeState.clear();
       }
 
       if (segment.map?.uri) {
-        if (segment.map !== lastMapReference) {
-          activeInitKey = null;
-          lastMapReference = segment.map;
-        }
-        const mapKey = buildInitSegmentKey(segment.map);
+        const initRange = resolveByteRange(segment.map.byterange, segment.map.uri, mapByteRangeState);
+        const mapKey = buildInitSegmentKey(segment.map, initRange);
         if (activeInitKey !== mapKey) {
           const initUrl = new URL(segment.map.uri, variantUrl).toString();
-          const initRange = resolveByteRange(segment.map.byterange, segment.map.uri, mapByteRangeState);
           const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`, initRange);
           await writeBufferToStream(fileStream, initBuffer);
           activeInitKey = mapKey;
@@ -250,11 +244,24 @@ async function downloadFromPlaylist(playlistUrl) {
   }
   fileStream.end();
   await finished(fileStream);
+  let finalFilePath = filePath;
+  let finalFileName = fileName;
+  let finalMimeType = container.mimeType;
+
+  if (container.type === 'ts' && config.remuxToMp4) {
+    const remuxed = await remuxTransportStream(tempDir, filePath, fileName);
+    if (remuxed) {
+      finalFilePath = remuxed.filePath;
+      finalFileName = remuxed.fileName;
+      finalMimeType = remuxed.mimeType;
+    }
+  }
+
   return {
-    filePath,
-    fileName,
+    filePath: finalFilePath,
+    fileName: finalFileName,
     cleanupDir: tempDir,
-    mimeType: container.mimeType,
+    mimeType: finalMimeType,
   };
 }
 
@@ -387,6 +394,64 @@ async function writeBufferToStream(stream, buffer) {
   if (!stream.write(buffer)) {
     await once(stream, 'drain');
   }
+}
+
+async function remuxTransportStream(tempDir, inputFilePath, inputFileName) {
+  const outputFileName = `${path.parse(inputFileName).name}.mp4`;
+  const outputFilePath = path.join(tempDir, outputFileName);
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+    '-i',
+    inputFilePath,
+    '-c',
+    'copy',
+    outputFilePath,
+  ];
+
+  try {
+    await runFfmpeg(args);
+  } catch (error) {
+    await fs.rm(outputFilePath, { force: true }).catch(() => {});
+    return null;
+  }
+
+  await fs.rm(inputFilePath, { force: true }).catch(() => {});
+
+  return {
+    filePath: outputFilePath,
+    fileName: outputFileName,
+    mimeType: 'video/mp4',
+  };
+}
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+
+    if (child.stderr) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk;
+      });
+    }
+
+    child.once('error', (error) => {
+      reject(error);
+    });
+
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        const error = new Error(`ffmpeg exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`);
+        reject(error);
+      }
+    });
+  });
 }
 
 function deriveInitializationVector(ivString, sequenceNumber) {
