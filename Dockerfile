@@ -35,7 +35,7 @@ ENV DOWNLOAD_ROOT=/tmp \
     FFMPEG_PATH=/usr/bin/ffmpeg
 
 # Run as non-root for safety
-USER node
+# USER node
 
 # If your app exposes an HTTP port, optionally uncomment:
 # EXPOSE 3000
