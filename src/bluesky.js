@@ -2,6 +2,7 @@ import { promises as fs, createWriteStream } from 'fs';
 import path from 'path';
 import { finished } from 'stream/promises';
 import { once } from 'node:events';
+import { createDecipheriv } from 'node:crypto';
 import { AtpAgent } from '@atproto/api';
 import { Parser as M3U8Parser } from 'm3u8-parser';
 import { config } from './config.js';
@@ -159,16 +160,48 @@ async function downloadFromPlaylist(playlistUrl) {
   const filePath = path.join(tempDir, 'video.mp4');
   const fileStream = createWriteStream(filePath);
   const writtenMaps = new Set();
+  const keyCache = new Map();
+  const baseSequence = variantParser.manifest.mediaSequence ?? 0;
   try {
-    for (const segment of segments) {
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
       if (segment.map?.uri && !writtenMaps.has(segment.map.uri)) {
         const initUrl = new URL(segment.map.uri, variantUrl).toString();
-        await appendRemoteFile(initUrl, fileStream, `initialization segment ${segment.map.uri}`);
+        const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`);
+        await writeBufferToStream(fileStream, initBuffer);
         writtenMaps.add(segment.map.uri);
       }
 
       const segmentUrl = new URL(segment.uri, variantUrl).toString();
-      await appendRemoteFile(segmentUrl, fileStream, `segment ${segment.uri}`);
+      let segmentBuffer = await fetchBuffer(segmentUrl, `segment ${segment.uri}`);
+      const keyInfo = segment.key ?? null;
+      if (keyInfo && keyInfo.method && keyInfo.method !== 'NONE') {
+        const method = keyInfo.method.toUpperCase();
+        if (method !== 'AES-128') {
+          throw new Error(`Unsupported HLS encryption method: ${keyInfo.method}`);
+        }
+
+        if (!keyInfo.uri) {
+          throw new Error('HLS encryption key is missing a URI');
+        }
+
+        const keyUrl = new URL(keyInfo.uri, variantUrl).toString();
+        let keyBuffer = keyCache.get(keyUrl);
+        if (!keyBuffer) {
+          keyBuffer = await fetchBuffer(keyUrl, `encryption key ${keyInfo.uri}`);
+          if (keyBuffer.length !== 16) {
+            throw new Error(`Unexpected HLS encryption key length for ${keyInfo.uri}`);
+          }
+          keyCache.set(keyUrl, keyBuffer);
+        }
+
+        const sequenceNumber = segment.mediaSequenceNumber ?? baseSequence + index;
+        const iv = deriveInitializationVector(keyInfo.iv, sequenceNumber);
+        const decipher = createDecipheriv('aes-128-cbc', keyBuffer, iv);
+        segmentBuffer = Buffer.concat([decipher.update(segmentBuffer), decipher.final()]);
+      }
+
+      await writeBufferToStream(fileStream, segmentBuffer);
     }
   } catch (error) {
     fileStream.destroy(error);
@@ -208,19 +241,6 @@ async function downloadFromBlob(did, videoInfo) {
   return { filePath, fileName, cleanupDir: tempDir };
 }
 
-async function appendRemoteFile(url, writable, label) {
-  const response = await fetch(url);
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to download ${label}`);
-  }
-
-  for await (const chunk of response.body) {
-    if (!writable.write(chunk)) {
-      await once(writable, 'drain');
-    }
-  }
-}
-
 function getExtensionFromMime(mimeType) {
   if (!mimeType) return null;
   if (mimeType.includes('mp4')) return 'mp4';
@@ -235,6 +255,33 @@ async function fetchText(url) {
     throw new Error(`Failed to fetch ${url} (${response.status})`);
   }
   return response.text();
+}
+
+async function fetchBuffer(url, label) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${label ?? url} (${response.status})`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+async function writeBufferToStream(stream, buffer) {
+  if (!stream.write(buffer)) {
+    await once(stream, 'drain');
+  }
+}
+
+function deriveInitializationVector(ivString, sequenceNumber) {
+  if (ivString) {
+    const normalized = ivString.startsWith('0x') ? ivString.slice(2) : ivString;
+    return Buffer.from(normalized.padStart(32, '0'), 'hex');
+  }
+
+  const iv = Buffer.alloc(16);
+  // Use the media sequence number as the IV when none is provided, per HLS AES-128 spec.
+  iv.writeUInt32BE(sequenceNumber >>> 0, 12);
+  return iv;
 }
 
 async function prepareTempDir() {

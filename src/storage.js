@@ -30,13 +30,15 @@ export async function uploadToR2(filePath, { fileName, contentType } = {}) {
   const finalName = fileName ?? path.basename(filePath);
   const key = buildObjectKey(finalName);
   const bodyStream = createReadStream(filePath);
+  const resolvedContentType = contentType ?? guessContentType(finalName) ?? 'video/mp4';
   try {
     await s3Client.send(
       new PutObjectCommand({
         Bucket: config.r2.bucketName,
         Key: key,
         Body: bodyStream,
-        ContentType: contentType ?? undefined,
+        ContentType: resolvedContentType,
+        ContentDisposition: `inline; filename="${finalName}"`,
       })
     );
   } catch (error) {
@@ -46,4 +48,18 @@ export async function uploadToR2(filePath, { fileName, contentType } = {}) {
 
   const publicUrl = `${config.r2.publicBaseUrl}/${encodeKeyForUrl(key)}`;
   return { key, publicUrl };
+}
+
+function guessContentType(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  switch (ext) {
+    case '.mp4':
+      return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.webm':
+      return 'video/webm';
+    default:
+      return null;
+  }
 }
