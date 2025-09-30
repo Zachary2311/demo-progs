@@ -65,7 +65,7 @@ A Discord bot that watches for Bluesky post links, downloads their video content
 
 - `/bluesky-listener enabled:<true|false> silent:<true|false>` – Toggle automatic downloads when Bluesky links appear in the guild and whether reposts should be silent.
 - `/bluesky-download url:<post-url> silent:<true|false>` – Fetch a specific Bluesky post immediately, optionally returning only the video URL.
-- `/bluesky-bulk urls:<post-urls> silent:<true|false>` – Download up to 10 Bluesky posts at once using a comma-separated list. The bot replies with a progress embed, follows up with each video (or just the download links when silent mode is enabled), and summarizes any errors after completion.
+- `/bluesky-bulk urls:<post-urls> silent:<true|false>` – Download multiple Bluesky posts at once using a comma-separated list. The bot replies with a progress embed, follows up with each video (or just the download links when silent mode is enabled), and summarizes any errors after completion.
 
 ### Automatic Downloads
 

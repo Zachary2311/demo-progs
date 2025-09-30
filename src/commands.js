@@ -13,8 +13,6 @@ import { cleanupDownload, extractBlueskyPostLinks, fetchBlueskyVideo } from './b
 import { uploadToR2 } from './storage.js';
 import { config } from './config.js';
 
-const MAX_BULK_LINKS = 10;
-
 export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName('bluesky-listener')
@@ -162,19 +160,6 @@ async function handleBulkDownloadCommand(interaction) {
         new EmbedBuilder()
           .setTitle('No Bluesky links found')
           .setDescription('Provide a comma separated list of Bluesky post URLs to download.')
-          .setColor(0xe74c3c),
-      ],
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (uniqueLinks.length > MAX_BULK_LINKS) {
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('Too many links')
-          .setDescription(`Bulk downloads are limited to ${MAX_BULK_LINKS} posts at a time.`)
           .setColor(0xe74c3c),
       ],
       ephemeral: true,
