@@ -85,7 +85,7 @@ async function handleDownloadCommand(interaction) {
     download = await fetchBlueskyVideo(url);
     const upload = await uploadToR2(download.filePath, {
       fileName: download.fileName,
-      contentType: download.videoInfo?.mimeType,
+      contentType: download.mimeType ?? download.videoInfo?.mimeType,
     });
     const response = buildMessagePayload({
       download,
@@ -125,7 +125,7 @@ export async function handlePotentialBlueskyLinks(message) {
       download = await fetchBlueskyVideo(link);
       const upload = await uploadToR2(download.filePath, {
         fileName: download.fileName,
-        contentType: download.videoInfo?.mimeType,
+        contentType: download.mimeType ?? download.videoInfo?.mimeType,
       });
       const payload = buildMessagePayload({
         download,

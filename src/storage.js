@@ -59,6 +59,8 @@ function guessContentType(fileName) {
       return 'video/quicktime';
     case '.webm':
       return 'video/webm';
+    case '.ts':
+      return 'video/mp2t';
     default:
       return null;
   }

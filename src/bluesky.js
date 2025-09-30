@@ -136,6 +136,26 @@ function parseBlueskyPostUrl(url) {
   return { handle: match[1], rkey: match[2], url: cleaned };
 }
 
+function detectPlaylistContainer(manifest) {
+  const hasInitSegments = manifest.segments?.some((segment) => segment.map?.uri);
+  if (hasInitSegments) {
+    return { type: 'fmp4', extension: 'mp4', mimeType: 'video/mp4' };
+  }
+  return { type: 'ts', extension: 'ts', mimeType: 'video/mp2t' };
+}
+
+function buildInitSegmentKey(map) {
+  if (!map?.uri) {
+    return null;
+  }
+  if (!map.byterange) {
+    return map.uri;
+  }
+  const parsed = parseByteRange(map.byterange, map.uri);
+  const offsetPart = parsed.offset !== undefined ? parsed.offset : '';
+  return `${map.uri}#${parsed.length}@${offsetPart}`;
+}
+
 async function downloadFromPlaylist(playlistUrl) {
   const masterContent = await fetchText(playlistUrl);
   const masterParser = new M3U8Parser();
@@ -157,9 +177,12 @@ async function downloadFromPlaylist(playlistUrl) {
     throw new Error('Variant playlist is empty');
   }
   const tempDir = await prepareTempDir();
-  const filePath = path.join(tempDir, 'video.mp4');
+  const container = detectPlaylistContainer(variantParser.manifest);
+  const fileName = `video.${container.extension}`;
+  const filePath = path.join(tempDir, fileName);
   const fileStream = createWriteStream(filePath);
-  const writtenMaps = new Set();
+  let activeInitKey = null;
+  let lastMapReference = null;
   const keyCache = new Map();
   const byteRangeState = new Map();
   const mapByteRangeState = new Map();
@@ -167,12 +190,26 @@ async function downloadFromPlaylist(playlistUrl) {
   try {
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
-      if (segment.map?.uri && !writtenMaps.has(segment.map.uri)) {
-        const initUrl = new URL(segment.map.uri, variantUrl).toString();
-        const initRange = resolveByteRange(segment.map.byterange, segment.map.uri, mapByteRangeState);
-        const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`, initRange);
-        await writeBufferToStream(fileStream, initBuffer);
-        writtenMaps.add(segment.map.uri);
+      if (segment.discontinuity) {
+        activeInitKey = null;
+        lastMapReference = null;
+        byteRangeState.clear();
+        mapByteRangeState.clear();
+      }
+
+      if (segment.map?.uri) {
+        if (segment.map !== lastMapReference) {
+          activeInitKey = null;
+          lastMapReference = segment.map;
+        }
+        const mapKey = buildInitSegmentKey(segment.map);
+        if (activeInitKey !== mapKey) {
+          const initUrl = new URL(segment.map.uri, variantUrl).toString();
+          const initRange = resolveByteRange(segment.map.byterange, segment.map.uri, mapByteRangeState);
+          const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`, initRange);
+          await writeBufferToStream(fileStream, initBuffer);
+          activeInitKey = mapKey;
+        }
       }
 
       const segmentUrl = new URL(segment.uri, variantUrl).toString();
@@ -213,7 +250,12 @@ async function downloadFromPlaylist(playlistUrl) {
   }
   fileStream.end();
   await finished(fileStream);
-  return { filePath, fileName: 'video.mp4', cleanupDir: tempDir };
+  return {
+    filePath,
+    fileName,
+    cleanupDir: tempDir,
+    mimeType: container.mimeType,
+  };
 }
 
 async function downloadFromBlob(did, videoInfo) {
@@ -242,7 +284,12 @@ async function downloadFromBlob(did, videoInfo) {
   }
   fileStream.end();
   await finished(fileStream);
-  return { filePath, fileName, cleanupDir: tempDir };
+  return {
+    filePath,
+    fileName,
+    cleanupDir: tempDir,
+    mimeType: videoInfo.mimeType ?? getMimeTypeFromExtension(extension),
+  };
 }
 
 function getExtensionFromMime(mimeType) {
@@ -251,6 +298,21 @@ function getExtensionFromMime(mimeType) {
   if (mimeType.includes('quicktime')) return 'mov';
   if (mimeType.includes('webm')) return 'webm';
   return null;
+}
+
+function getMimeTypeFromExtension(extension) {
+  switch (extension) {
+    case 'mp4':
+      return 'video/mp4';
+    case 'mov':
+      return 'video/quicktime';
+    case 'webm':
+      return 'video/webm';
+    case 'ts':
+      return 'video/mp2t';
+    default:
+      return undefined;
+  }
 }
 
 async function fetchText(url) {
