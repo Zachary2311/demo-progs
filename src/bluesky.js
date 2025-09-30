@@ -161,19 +161,23 @@ async function downloadFromPlaylist(playlistUrl) {
   const fileStream = createWriteStream(filePath);
   const writtenMaps = new Set();
   const keyCache = new Map();
+  const byteRangeState = new Map();
+  const mapByteRangeState = new Map();
   const baseSequence = variantParser.manifest.mediaSequence ?? 0;
   try {
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       if (segment.map?.uri && !writtenMaps.has(segment.map.uri)) {
         const initUrl = new URL(segment.map.uri, variantUrl).toString();
-        const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`);
+        const initRange = resolveByteRange(segment.map.byterange, segment.map.uri, mapByteRangeState);
+        const initBuffer = await fetchBuffer(initUrl, `initialization segment ${segment.map.uri}`, initRange);
         await writeBufferToStream(fileStream, initBuffer);
         writtenMaps.add(segment.map.uri);
       }
 
       const segmentUrl = new URL(segment.uri, variantUrl).toString();
-      let segmentBuffer = await fetchBuffer(segmentUrl, `segment ${segment.uri}`);
+      const range = resolveByteRange(segment.byterange, segment.uri, byteRangeState);
+      let segmentBuffer = await fetchBuffer(segmentUrl, `segment ${segment.uri}`, range);
       const keyInfo = segment.key ?? null;
       if (keyInfo && keyInfo.method && keyInfo.method !== 'NONE') {
         const method = keyInfo.method.toUpperCase();
@@ -257,13 +261,64 @@ async function fetchText(url) {
   return response.text();
 }
 
-async function fetchBuffer(url, label) {
-  const response = await fetch(url);
+async function fetchBuffer(url, label, range) {
+  const headers = {};
+  if (range) {
+    const start = range.offset ?? 0;
+    const end = start + range.length - 1;
+    headers.Range = `bytes=${start}-${end}`;
+  }
+  const response = await fetch(url, { headers });
   if (!response.ok) {
     throw new Error(`Failed to download ${label ?? url} (${response.status})`);
   }
   const arrayBuffer = await response.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+function resolveByteRange(range, uri, state) {
+  if (!range) {
+    if (state && uri) {
+      state.delete(uri);
+    }
+    return null;
+  }
+
+  const parsed = parseByteRange(range, uri);
+  if (parsed.offset === undefined) {
+    const previous = state?.get(uri) ?? 0;
+    parsed.offset = previous;
+  }
+
+  if (state && uri) {
+    state.set(uri, parsed.offset + parsed.length);
+  }
+
+  return parsed;
+}
+
+function parseByteRange(range, uri) {
+  if (typeof range === 'string') {
+    const [lengthString, offsetString] = range.split('@');
+    const length = Number(lengthString);
+    const offset = offsetString !== undefined ? Number(offsetString) : undefined;
+    validateByteRange(length, offset, uri);
+    return { length, offset };
+  }
+
+  const length = Number(range.length);
+  const offset = range.offset !== undefined ? Number(range.offset) : undefined;
+  validateByteRange(length, offset, uri);
+  return { length, offset };
+}
+
+function validateByteRange(length, offset, uri) {
+  if (!Number.isFinite(length) || length <= 0) {
+    throw new Error(`Invalid byte range length for ${uri ?? 'segment'}`);
+  }
+  if (offset !== undefined && (!Number.isFinite(offset) || offset < 0)) {
+    throw new Error(`Invalid byte range offset for ${uri ?? 'segment'}`);
+  }
 }
 
 async function writeBufferToStream(stream, buffer) {
