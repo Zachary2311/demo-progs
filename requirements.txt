@@ -1,0 +1,5 @@
+aiohttp==3.9.5
+asyncpg==0.29.0
+discord.py==2.4.0
+m3u8==5.0.0
+python-dotenv==1.0.1
