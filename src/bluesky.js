@@ -158,18 +158,17 @@ async function downloadFromPlaylist(playlistUrl) {
   const tempDir = await prepareTempDir();
   const filePath = path.join(tempDir, 'video.mp4');
   const fileStream = createWriteStream(filePath);
+  const writtenMaps = new Set();
   try {
     for (const segment of segments) {
+      if (segment.map?.uri && !writtenMaps.has(segment.map.uri)) {
+        const initUrl = new URL(segment.map.uri, variantUrl).toString();
+        await appendRemoteFile(initUrl, fileStream, `initialization segment ${segment.map.uri}`);
+        writtenMaps.add(segment.map.uri);
+      }
+
       const segmentUrl = new URL(segment.uri, variantUrl).toString();
-      const response = await fetch(segmentUrl);
-      if (!response.ok || !response.body) {
-        throw new Error(`Failed to download segment: ${segment.uri}`);
-      }
-      for await (const chunk of response.body) {
-        if (!fileStream.write(chunk)) {
-          await once(fileStream, 'drain');
-        }
-      }
+      await appendRemoteFile(segmentUrl, fileStream, `segment ${segment.uri}`);
     }
   } catch (error) {
     fileStream.destroy(error);
@@ -207,6 +206,19 @@ async function downloadFromBlob(did, videoInfo) {
   fileStream.end();
   await finished(fileStream);
   return { filePath, fileName, cleanupDir: tempDir };
+}
+
+async function appendRemoteFile(url, writable, label) {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) {
+    throw new Error(`Failed to download ${label}`);
+  }
+
+  for await (const chunk of response.body) {
+    if (!writable.write(chunk)) {
+      await once(writable, 'drain');
+    }
+  }
 }
 
 function getExtensionFromMime(mimeType) {
