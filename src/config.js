@@ -43,7 +43,6 @@ export const config = {
   downloadRoot: process.env.BOT_DATA_DIR || defaultDataDir,
   commandGuildIds: process.env.DEV_GUILD_IDS ? process.env.DEV_GUILD_IDS.split(',').map((id) => id.trim()).filter(Boolean) : null,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 8 * 1024 * 1024),
-  remuxToMp4: /^true$/i.test(process.env.REMUX_TO_MP4 ?? ''),
   ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
   r2: {
     accountId: process.env.R2_ACCOUNT_ID,

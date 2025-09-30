@@ -10,13 +10,14 @@ A Discord bot that watches for Bluesky post links, downloads their video content
 - Uploads finished downloads to Cloudflare R2 for consistent Discord playback.
 - Optional silent mode that posts only the video URL, with embeds available when desired.
 - Optional guild-specific command registration for faster iteration during development.
-- Preserves the original container type (fragmented MP4 vs. MPEG-TS) and can optionally remux transport streams to MP4 when ffmpeg is available.
+- Automatically remuxes MPEG-TS HLS variants into MP4 with ffmpeg for reliable Discord playback.
 
 ## Prerequisites
 
 - Node.js 18 or newer.
 - A running PostgreSQL database.
 - A Discord application with a bot token and the `MESSAGE CONTENT INTENT` enabled.
+- `ffmpeg` installed and available on the system `PATH` (or configure `FFMPEG_PATH`).
 
 ## Getting Started
 
@@ -45,7 +46,6 @@ A Discord bot that watches for Bluesky post links, downloads their video content
    | `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret access key. |
    | `R2_BUCKET_NAME` | Cloudflare R2 bucket used to store uploaded videos. |
    | `R2_PUBLIC_BASE_URL` | Public base URL that serves files from the R2 bucket. |
-   | `REMUX_TO_MP4` | *(Optional)* Set to `true` to remux MPEG-TS downloads to MP4 using ffmpeg. |
    | `FFMPEG_PATH` | *(Optional)* Path to the ffmpeg binary (defaults to `ffmpeg`). |
    | `R2_ENDPOINT` | *(Optional)* Override the R2 S3-compatible endpoint. |
    | `R2_OBJECT_PREFIX` | *(Optional)* Prefix to apply to every uploaded object key. |
@@ -69,7 +69,7 @@ A Discord bot that watches for Bluesky post links, downloads their video content
 
 When the listener is enabled for a guild, every new message containing a Bluesky post URL triggers a download. The bot streams the video to a temporary file within the data directory, uploads it to Cloudflare R2, and cleans up the file afterwards. The reposted message includes the hosted video URL and, unless silent mode is enabled, an informative embed.
 
-HLS variants that use MPEG-TS segments are saved with a `.ts` extension and served with the correct MIME type. When `REMUX_TO_MP4` is enabled and ffmpeg is present, those downloads are remuxed (no re-encode) into `.mp4` files for improved compatibility. Fragmented MP4 variants prepend the required initialization segment before their media segments so the resulting `.mp4` files play inline in Discord.
+HLS variants that use MPEG-TS segments are remuxed (no re-encode) into `.mp4` files via ffmpeg before upload so Discord can play them inline. Fragmented MP4 variants prepend the required initialization segment before their media segments so the resulting `.mp4` files play inline in Discord.
 
 ## Deployment Tips
 

@@ -248,13 +248,11 @@ async function downloadFromPlaylist(playlistUrl) {
   let finalFileName = fileName;
   let finalMimeType = container.mimeType;
 
-  if (container.type === 'ts' && config.remuxToMp4) {
+  if (container.type === 'ts') {
     const remuxed = await remuxTransportStream(tempDir, filePath, fileName);
-    if (remuxed) {
-      finalFilePath = remuxed.filePath;
-      finalFileName = remuxed.fileName;
-      finalMimeType = remuxed.mimeType;
-    }
+    finalFilePath = remuxed.filePath;
+    finalFileName = remuxed.fileName;
+    finalMimeType = remuxed.mimeType;
   }
 
   return {
@@ -415,7 +413,7 @@ async function remuxTransportStream(tempDir, inputFilePath, inputFileName) {
     await runFfmpeg(args);
   } catch (error) {
     await fs.rm(outputFilePath, { force: true }).catch(() => {});
-    return null;
+    throw new Error(`Failed to convert transport stream to MP4: ${error.message}`, { cause: error });
   }
 
   await fs.rm(inputFilePath, { force: true }).catch(() => {});
