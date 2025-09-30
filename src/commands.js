@@ -7,7 +7,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
 } from 'discord.js';
-import { saveGuildSettings } from './database.js';
+import { saveGuildSettings, recordDownload } from './database.js';
 import { guildSettingsCache } from './settingsCache.js';
 import { cleanupDownload, extractBlueskyPostLinks, fetchBlueskyVideo } from './bluesky.js';
 import { uploadToR2 } from './storage.js';
@@ -115,6 +115,11 @@ async function handleDownloadCommand(interaction) {
       fileName: download.fileName,
       contentType: download.mimeType ?? download.videoInfo?.mimeType,
     });
+    await persistDownloadRecord({
+      userId: interaction.user.id,
+      blueskyUrl: url,
+      r2Url: upload.publicUrl,
+    });
     const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
     const response = buildMessagePayload({
       download,
@@ -196,6 +201,11 @@ async function handleBulkDownloadCommand(interaction) {
         fileName: download.fileName,
         contentType: download.mimeType ?? download.videoInfo?.mimeType,
       });
+      await persistDownloadRecord({
+        userId: interaction.user.id,
+        blueskyUrl: link.url,
+        r2Url: upload.publicUrl,
+      });
       const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
       const payload = buildMessagePayload({
         download,
@@ -252,6 +262,11 @@ export async function handlePotentialBlueskyLinks(message) {
       const upload = await uploadToR2(download.filePath, {
         fileName: download.fileName,
         contentType: download.mimeType ?? download.videoInfo?.mimeType,
+      });
+      await persistDownloadRecord({
+        userId: message.author.id,
+        blueskyUrl: link.url,
+        r2Url: upload.publicUrl,
       });
       const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
       const payload = buildMessagePayload({
@@ -365,4 +380,12 @@ function truncateForField(text, maxLength = 256) {
     return text;
   }
   return `${text.slice(0, maxLength - 1)}…`;
+}
+
+async function persistDownloadRecord({ userId, blueskyUrl, r2Url }) {
+  try {
+    await recordDownload({ userId, blueskyUrl, r2Url });
+  } catch (error) {
+    console.error('Failed to record Bluesky download', error);
+  }
 }

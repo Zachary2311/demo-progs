@@ -20,6 +20,15 @@ export async function initDatabase() {
     `ALTER TABLE guild_settings
        ADD COLUMN IF NOT EXISTS silent_mode BOOLEAN NOT NULL DEFAULT FALSE`
   );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS downloads (
+      id BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      bluesky_url TEXT NOT NULL,
+      r2_url TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }
 
 export async function getGuildSettings(guildId) {
@@ -59,4 +68,16 @@ export async function saveGuildSettings(guildId, updates) {
 
 export async function shutdownDatabase() {
   await pool.end();
+}
+
+export async function recordDownload({ userId, blueskyUrl, r2Url }) {
+  if (!userId || !blueskyUrl || !r2Url) {
+    throw new Error('Missing download metadata');
+  }
+
+  await pool.query(
+    `INSERT INTO downloads (user_id, bluesky_url, r2_url)
+     VALUES ($1, $2, $3)`,
+    [userId, blueskyUrl, r2Url]
+  );
 }
