@@ -1,14 +1,17 @@
 // scripts/get-ffmpeg.js
-import { createWriteStream } from 'node:fs';
-import { chmodSync } from 'node:fs';
+import { createWriteStream, chmodSync, mkdirSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { request } from 'node:https';
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 
-const url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'; // static Linux x64
 const destDir = './bin';
 mkdirSync(destDir, { recursive: true });
+
+// Prefer a gzip archive so we don't need xz on the build image.
+// Use a mirror that provides .tar.gz for Linux x64 static builds.
+// (If your mirror only has .tar.xz, switch to Option 1 or 2 above.)
+const url = process.env.FFMPEG_TARGZ_URL || 'https://evermeet.cx/ffmpeg/getrelease/ffmpeg-6.1.1-amd64.tar.gz';
 
 function fetch(url) {
   return new Promise((resolve, reject) => {
@@ -19,12 +22,20 @@ function fetch(url) {
   });
 }
 
-const tarPath = join(destDir, 'ffmpeg.tar.xz');
+const tarPath = join(destDir, 'ffmpeg.tar.gz');
 const out = createWriteStream(tarPath);
 const res = await fetch(url);
 await pipeline(res, out);
 
-// Extract and place ./bin/ffmpeg
-import { execSync } from 'node:child_process';
-execSync(`tar -xJf ${tarPath} -C ${destDir} --strip-components=1`);
-chmodSync(join(destDir, 'ffmpeg'), 0o755);
+try {
+  // Extract gzip (no xz dependency required)
+  execSync(`tar -xzf ${tarPath} -C ${destDir} --strip-components=1`, { stdio: 'inherit' });
+} catch (e) {
+  console.error('Failed to extract ffmpeg .tar.gz:', e.message);
+  process.exit(1);
+}
+
+// Make sure the binary is executable and in a known place
+const bin = join(destDir, 'ffmpeg');
+chmodSync(bin, 0o755);
+console.log('ffmpeg ready at', bin);
