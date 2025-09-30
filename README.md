@@ -8,6 +8,7 @@ A Discord bot that watches for Bluesky post links, downloads their video content
 - PostgreSQL storage for per-guild listener preferences.
 - Streams HLS segments directly to disk inside the bot's data directory until uploads complete.
 - Uploads finished downloads to Cloudflare R2 and reposts them as Discord attachments with a download button linking to the Cloudflare copy.
+- Automatically falls back to sharing only the Cloudflare link when a video exceeds the configured Discord upload limit.
 - Optional silent mode that posts only the Discord video attachment, with embeds available when desired.
 - Optional guild-specific command registration for faster iteration during development.
 - Automatically remuxes MPEG-TS HLS variants into MP4 with ffmpeg for reliable Discord playback.
@@ -68,7 +69,7 @@ A Discord bot that watches for Bluesky post links, downloads their video content
 
 ### Automatic Downloads
 
-When the listener is enabled for a guild, every new message containing a Bluesky post URL triggers a download. The bot streams the video to a temporary file within the data directory, uploads it to Cloudflare R2, and cleans up the file afterwards. The reposted message attaches the video directly in Discord and, unless silent mode is enabled, adds an informative embed plus a download button that links to the Cloudflare-hosted copy.
+When the listener is enabled for a guild, every new message containing a Bluesky post URL triggers a download. The bot streams the video to a temporary file within the data directory, uploads it to Cloudflare R2, and cleans up the file afterwards. The reposted message attaches the video directly in Discord when it fits under the configured size limit (default 8 MiB) and, unless silent mode is enabled, adds an informative embed plus a download button that links to the Cloudflare-hosted copy. Videos that exceed the size cap skip the attachment and instead share the Cloudflare URL alongside the same download button so members can still access the video.
 
 HLS variants that use MPEG-TS segments are remuxed (no re-encode) into `.mp4` files via ffmpeg before upload so Discord can play them inline. Fragmented MP4 variants prepend the required initialization segment before their media segments so the resulting `.mp4` files play inline in Discord.
 

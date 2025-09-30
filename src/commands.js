@@ -11,6 +11,7 @@ import { saveGuildSettings } from './database.js';
 import { guildSettingsCache } from './settingsCache.js';
 import { cleanupDownload, extractBlueskyPostLinks, fetchBlueskyVideo } from './bluesky.js';
 import { uploadToR2 } from './storage.js';
+import { config } from './config.js';
 
 const MAX_BULK_LINKS = 10;
 
@@ -116,12 +117,14 @@ async function handleDownloadCommand(interaction) {
       fileName: download.fileName,
       contentType: download.mimeType ?? download.videoInfo?.mimeType,
     });
+    const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
     const response = buildMessagePayload({
       download,
       requestedBy: interaction.user.username,
       postUrl: url,
       videoUrl: upload.publicUrl,
       silent,
+      attachFile,
     });
     await interaction.editReply(response);
   } catch (error) {
@@ -208,12 +211,14 @@ async function handleBulkDownloadCommand(interaction) {
         fileName: download.fileName,
         contentType: download.mimeType ?? download.videoInfo?.mimeType,
       });
+      const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
       const payload = buildMessagePayload({
         download,
         requestedBy: interaction.user.username,
         postUrl: link.url,
         videoUrl: upload.publicUrl,
         silent,
+        attachFile,
       });
       await interaction.followUp(payload);
       successes += 1;
@@ -263,12 +268,14 @@ export async function handlePotentialBlueskyLinks(message) {
         fileName: download.fileName,
         contentType: download.mimeType ?? download.videoInfo?.mimeType,
       });
+      const attachFile = (download.fileSize ?? download.videoInfo?.size ?? 0) <= config.maxUploadBytes;
       const payload = buildMessagePayload({
         download,
         requestedBy: message.author.username,
         postUrl: link.url,
         videoUrl: upload.publicUrl,
         silent: settings.silentMode,
+        attachFile,
       });
       await message.channel.send(payload);
     } catch (error) {
@@ -285,7 +292,7 @@ export async function handlePotentialBlueskyLinks(message) {
   }
 }
 
-function buildVideoEmbed(download, requestedBy, url) {
+function buildVideoEmbed(download, requestedBy, url, { fallbackOnly = false, videoUrl } = {}) {
   const { post, author } = download;
   const embed = new EmbedBuilder()
     .setTitle(`Video from ${author?.displayName ?? author?.handle ?? 'Bluesky'}`)
@@ -302,11 +309,17 @@ function buildVideoEmbed(download, requestedBy, url) {
     embed.setFooter({ text: `Requested by ${requestedBy}` });
   }
 
+  if (fallbackOnly && videoUrl) {
+    embed.addFields({
+      name: 'Download link',
+      value: `[Open video](${videoUrl}) (hosted via Cloudflare R2)`,
+    });
+  }
+
   return embed;
 }
 
-function buildMessagePayload({ download, requestedBy, postUrl, videoUrl, silent }) {
-  const attachment = new AttachmentBuilder(download.filePath).setName(download.fileName);
+function buildMessagePayload({ download, requestedBy, postUrl, videoUrl, silent, attachFile = true }) {
   const components = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Download').setStyle(ButtonStyle.Link).setURL(videoUrl)
@@ -314,16 +327,24 @@ function buildMessagePayload({ download, requestedBy, postUrl, videoUrl, silent 
   ];
 
   const base = {
-    files: [attachment],
     components,
     allowedMentions: { parse: [] },
   };
+
+  if (attachFile) {
+    base.files = [new AttachmentBuilder(download.filePath).setName(download.fileName)];
+  } else {
+    base.content = videoUrl;
+  }
 
   if (silent) {
     return base;
   }
 
-  const embed = buildVideoEmbed(download, requestedBy, postUrl);
+  const embed = buildVideoEmbed(download, requestedBy, postUrl, {
+    fallbackOnly: !attachFile,
+    videoUrl,
+  });
   return { ...base, embeds: [embed] };
 }
 

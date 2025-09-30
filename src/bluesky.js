@@ -99,11 +99,6 @@ export async function fetchBlueskyVideo(postUrlOrMatch) {
     throw new Error('Invalid Bluesky post URL');
   }
   const { post, videoInfo, author, record } = await resolvePost(handle, rkey);
-  if (videoInfo?.size && videoInfo.size > config.maxUploadBytes) {
-    throw new Error(
-      `Video file is ${formatBytes(videoInfo.size)}, which exceeds the configured upload limit of ${formatBytes(config.maxUploadBytes)}.`
-    );
-  }
   let downloadResult;
   if (videoInfo?.playlistUrl) {
     downloadResult = await downloadFromPlaylist(videoInfo.playlistUrl);
@@ -118,14 +113,6 @@ export async function fetchBlueskyVideo(postUrlOrMatch) {
     author,
     videoInfo,
   };
-}
-
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KiB', 'MiB', 'GiB'];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** exponent;
-  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
 function parseBlueskyPostUrl(url) {
@@ -255,11 +242,14 @@ async function downloadFromPlaylist(playlistUrl) {
     finalMimeType = remuxed.mimeType;
   }
 
+  const { size } = await fs.stat(finalFilePath);
+
   return {
     filePath: finalFilePath,
     fileName: finalFileName,
     cleanupDir: tempDir,
     mimeType: finalMimeType,
+    fileSize: size,
   };
 }
 
@@ -289,11 +279,14 @@ async function downloadFromBlob(did, videoInfo) {
   }
   fileStream.end();
   await finished(fileStream);
+  const { size } = await fs.stat(filePath);
+
   return {
     filePath,
     fileName,
     cleanupDir: tempDir,
     mimeType: videoInfo.mimeType ?? getMimeTypeFromExtension(extension),
+    fileSize: size,
   };
 }
 
