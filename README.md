@@ -7,7 +7,7 @@ A Discord bot that watches for Bluesky post links and mirrors attached videos di
 - Automatic detection of Bluesky links in guild channels with opt-in/opt-out per server.
 - Slash command to manually download a Bluesky video via URL.
 - Streaming downloads into the bot's `data/` directory to minimise RAM usage.
-- PostgreSQL-backed configuration using `asyncpg` with connection pooling.
+- PostgreSQL-backed configuration using `psycopg` with connection pooling.
 - Rich embed status messages for transparency while downloads and uploads run.
 
 ## Requirements

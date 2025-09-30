@@ -1,4 +1,4 @@
 aiohttp==3.9.5
-asyncpg==0.29.0
 discord.py==2.3.2
 python-dotenv==1.0.1
+psycopg[binary,pool]==3.2.1
