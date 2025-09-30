@@ -12,6 +12,8 @@ import { guildSettingsCache } from './settingsCache.js';
 import { cleanupDownload, extractBlueskyPostLinks, fetchBlueskyVideo } from './bluesky.js';
 import { uploadToR2 } from './storage.js';
 
+const MAX_BULK_LINKS = 10;
+
 export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName('bluesky-listener')
@@ -43,6 +45,21 @@ export const commandDefinitions = [
         .setDescription('Only return the video URL without embeds.')
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName('bluesky-bulk')
+    .setDescription('Download multiple Bluesky videos with a single command.')
+    .addStringOption((option) =>
+      option
+        .setName('urls')
+        .setDescription('Comma separated Bluesky post URLs.')
+        .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('silent')
+        .setDescription('Only return the video URLs without embeds.')
+        .setRequired(false)
+    ),
 ].map((builder) => builder.toJSON());
 
 export async function handleCommandInteraction(interaction) {
@@ -62,6 +79,10 @@ export async function handleCommandInteraction(interaction) {
   if (interaction.commandName === 'bluesky-download') {
     await handleDownloadCommand(interaction);
     return;
+  }
+
+  if (interaction.commandName === 'bluesky-bulk') {
+    await handleBulkDownloadCommand(interaction);
   }
 }
 
@@ -115,6 +136,113 @@ async function handleDownloadCommand(interaction) {
   } finally {
     if (download?.cleanupDir) {
       await cleanupDownload(download.cleanupDir);
+    }
+  }
+}
+
+async function handleBulkDownloadCommand(interaction) {
+  const urlsText = interaction.options.getString('urls', true);
+  const silent = interaction.options.getBoolean('silent') ?? false;
+  const matches = extractBlueskyPostLinks(urlsText);
+  const uniqueLinks = [];
+  const seen = new Set();
+  for (const match of matches) {
+    if (!seen.has(match.url)) {
+      uniqueLinks.push(match);
+      seen.add(match.url);
+    }
+  }
+
+  if (!uniqueLinks.length) {
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('No Bluesky links found')
+          .setDescription('Provide a comma separated list of Bluesky post URLs to download.')
+          .setColor(0xe74c3c),
+      ],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (uniqueLinks.length > MAX_BULK_LINKS) {
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Too many links')
+          .setDescription(`Bulk downloads are limited to ${MAX_BULK_LINKS} posts at a time.`)
+          .setColor(0xe74c3c),
+      ],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: false });
+
+  const start = Date.now();
+  const failures = [];
+  let completed = 0;
+  let successes = 0;
+
+  await interaction.editReply({
+    embeds: [
+      buildBulkStatusEmbed({
+        total: uniqueLinks.length,
+        completed,
+        successes,
+        failures,
+        start,
+        silent,
+        done: false,
+      }),
+    ],
+  });
+
+  for (const link of uniqueLinks) {
+    let download;
+    try {
+      download = await fetchBlueskyVideo(link);
+      const upload = await uploadToR2(download.filePath, {
+        fileName: download.fileName,
+        contentType: download.mimeType ?? download.videoInfo?.mimeType,
+      });
+      const payload = buildMessagePayload({
+        download,
+        requestedBy: interaction.user.username,
+        postUrl: link.url,
+        videoUrl: upload.publicUrl,
+        silent,
+      });
+      await interaction.followUp(payload);
+      successes += 1;
+    } catch (error) {
+      failures.push({ url: link.url, message: error.message ?? 'An unexpected error occurred.' });
+      const errorEmbed = new EmbedBuilder()
+        .setTitle('Bluesky download failed')
+        .setDescription(`[Open post](${link.url})`)
+        .addFields({ name: 'Error', value: error.message ?? 'An unexpected error occurred.' })
+        .setColor(0xe67e22);
+      await interaction.followUp({ embeds: [errorEmbed] });
+    } finally {
+      completed += 1;
+      if (download?.cleanupDir) {
+        await cleanupDownload(download.cleanupDir);
+      }
+      await interaction.editReply({
+        embeds: [
+          buildBulkStatusEmbed({
+            total: uniqueLinks.length,
+            completed,
+            successes,
+            failures,
+            start,
+            silent,
+            done: completed === uniqueLinks.length,
+          }),
+        ],
+      });
     }
   }
 }
@@ -197,4 +325,38 @@ function buildMessagePayload({ download, requestedBy, postUrl, videoUrl, silent 
 
   const embed = buildVideoEmbed(download, requestedBy, postUrl);
   return { ...base, embeds: [embed] };
+}
+
+function buildBulkStatusEmbed({ total, completed, successes, failures, start, silent, done }) {
+  const durationSeconds = Math.max(0, (Date.now() - start) / 1000);
+  const embed = new EmbedBuilder()
+    .setTitle(done ? 'Bulk Bluesky download complete' : 'Bulk Bluesky download in progress')
+    .setColor(done ? (failures.length ? 0xe67e22 : 0x2ecc71) : 0x3498db)
+    .setDescription(
+      `Processing ${total} link${total === 1 ? '' : 's'} in ${silent ? 'silent' : 'standard'} mode.`
+    )
+    .addFields(
+      { name: 'Completed', value: `${completed}/${total}`, inline: true },
+      { name: 'Succeeded', value: `${successes}`, inline: true },
+      { name: 'Failed', value: `${failures.length}`, inline: true }
+    )
+    .addFields({ name: 'Elapsed', value: `${durationSeconds.toFixed(1)}s`, inline: true });
+
+  if (failures.length) {
+    const recent = failures.slice(-3).map((failure) => {
+      const message = truncateForField(failure.message);
+      return `• [Post](${failure.url}) — ${message}`;
+    });
+    embed.addFields({ name: 'Recent errors', value: recent.join('\n') });
+  }
+
+  return embed;
+}
+
+function truncateForField(text, maxLength = 256) {
+  if (!text) return 'Unknown error';
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength - 1)}…`;
 }
