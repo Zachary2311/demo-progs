@@ -1,4 +1,4 @@
-import { isGuildListening } from './database.js';
+import { getGuildSettings } from './database.js';
 
 class GuildSettingsCache {
   constructor({ ttlMs = 60_000 } = {}) {
@@ -12,7 +12,7 @@ class GuildSettingsCache {
     if (existing && existing.expiresAt > now) {
       return existing.value;
     }
-    const value = await isGuildListening(guildId);
+    const value = await getGuildSettings(guildId);
     this.cache.set(guildId, { value, expiresAt: now + this.ttlMs });
     return value;
   }

@@ -1,8 +1,8 @@
-import { createReadStream } from 'fs';
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, bold } from 'discord.js';
-import { setGuildListening } from './database.js';
+import { SlashCommandBuilder, EmbedBuilder, bold } from 'discord.js';
+import { saveGuildSettings } from './database.js';
 import { guildSettingsCache } from './settingsCache.js';
 import { cleanupDownload, extractBlueskyPostLinks, fetchBlueskyVideo } from './bluesky.js';
+import { uploadToR2 } from './storage.js';
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
@@ -13,6 +13,12 @@ export const commandDefinitions = [
         .setName('enabled')
         .setDescription('Enable automatic downloads when Bluesky links are posted.')
         .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('silent')
+        .setDescription('Only post the video URL without embeds when downloads are posted.')
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName('bluesky-download')
@@ -22,6 +28,12 @@ export const commandDefinitions = [
         .setName('url')
         .setDescription('The Bluesky post URL to download the video from.')
         .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('silent')
+        .setDescription('Only return the video URL without embeds.')
+        .setRequired(false)
     ),
 ].map((builder) => builder.toJSON());
 
@@ -47,25 +59,42 @@ export async function handleCommandInteraction(interaction) {
 
 async function handleToggleCommand(interaction) {
   const enabled = interaction.options.getBoolean('enabled', true);
+  const silent = interaction.options.getBoolean('silent');
   await interaction.deferReply({ ephemeral: true });
-  await setGuildListening(interaction.guildId, enabled);
-  guildSettingsCache.set(interaction.guildId, enabled);
+  const updated = await saveGuildSettings(interaction.guildId, {
+    listenEnabled: enabled,
+    silentMode: silent ?? undefined,
+  });
+  guildSettingsCache.set(interaction.guildId, updated);
   const embed = new EmbedBuilder()
     .setTitle('Bluesky listener updated')
-    .setDescription(`Automatic downloads are now ${enabled ? bold('enabled') : bold('disabled')} for this server.`)
+    .setDescription(
+      `Automatic downloads are now ${enabled ? bold('enabled') : bold('disabled')} for this server.\n` +
+        `Silent mode is ${updated.silentMode ? bold('enabled') : bold('disabled')}.`
+    )
     .setColor(enabled ? 0x2ecc71 : 0xe74c3c);
   await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleDownloadCommand(interaction) {
   const url = interaction.options.getString('url', true);
+  const silent = interaction.options.getBoolean('silent') ?? false;
   await interaction.deferReply({ ephemeral: false });
   let download;
   try {
     download = await fetchBlueskyVideo(url);
-    const embed = buildVideoEmbed(download, interaction.user.username, url);
-    const attachment = new AttachmentBuilder(createReadStream(download.filePath), { name: download.fileName });
-    await interaction.editReply({ embeds: [embed], files: [attachment] });
+    const upload = await uploadToR2(download.filePath, {
+      fileName: download.fileName,
+      contentType: download.videoInfo?.mimeType,
+    });
+    const response = buildMessagePayload({
+      download,
+      requestedBy: interaction.user.username,
+      postUrl: url,
+      videoUrl: upload.publicUrl,
+      silent,
+    });
+    await interaction.editReply(response);
   } catch (error) {
     await interaction.editReply({
       embeds: [
@@ -84,8 +113,8 @@ async function handleDownloadCommand(interaction) {
 
 export async function handlePotentialBlueskyLinks(message) {
   if (!message.guild || message.author.bot) return;
-  const shouldListen = await guildSettingsCache.get(message.guildId);
-  if (!shouldListen) return;
+  const settings = await guildSettingsCache.get(message.guildId);
+  if (!settings.listenEnabled) return;
 
   const links = extractBlueskyPostLinks(message.content);
   if (!links.length) return;
@@ -94,9 +123,18 @@ export async function handlePotentialBlueskyLinks(message) {
     let download;
     try {
       download = await fetchBlueskyVideo(link);
-      const embed = buildVideoEmbed(download, message.author.username, link.url);
-      const attachment = new AttachmentBuilder(createReadStream(download.filePath), { name: download.fileName });
-      await message.channel.send({ embeds: [embed], files: [attachment] });
+      const upload = await uploadToR2(download.filePath, {
+        fileName: download.fileName,
+        contentType: download.videoInfo?.mimeType,
+      });
+      const payload = buildMessagePayload({
+        download,
+        requestedBy: message.author.username,
+        postUrl: link.url,
+        videoUrl: upload.publicUrl,
+        silent: settings.silentMode,
+      });
+      await message.channel.send(payload);
     } catch (error) {
       const embed = new EmbedBuilder()
         .setTitle('Bluesky download failed')
@@ -129,4 +167,18 @@ function buildVideoEmbed(download, requestedBy, url) {
   }
 
   return embed;
+}
+
+function buildMessagePayload({ download, requestedBy, postUrl, videoUrl, silent }) {
+  const base = {
+    content: videoUrl,
+    allowedMentions: { parse: [] },
+  };
+
+  if (silent) {
+    return base;
+  }
+
+  const embed = buildVideoEmbed(download, requestedBy, postUrl);
+  return { ...base, embeds: [embed] };
 }
