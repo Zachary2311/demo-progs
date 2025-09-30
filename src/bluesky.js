@@ -280,7 +280,14 @@ function deriveInitializationVector(ivString, sequenceNumber) {
 
   const iv = Buffer.alloc(16);
   // Use the media sequence number as the IV when none is provided, per HLS AES-128 spec.
-  iv.writeUInt32BE(sequenceNumber >>> 0, 12);
+  const normalizedSequence = Number.isFinite(sequenceNumber)
+    ? Math.max(0, Math.floor(sequenceNumber))
+    : 0;
+  let value = BigInt(normalizedSequence);
+  for (let index = 15; index >= 0 && value > 0n; index -= 1) {
+    iv[index] = Number(value & 0xffn);
+    value >>= 8n;
+  }
   return iv;
 }
 
