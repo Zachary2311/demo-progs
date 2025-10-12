@@ -5,7 +5,7 @@ import { Readable } from 'stream';
 import fetch from 'node-fetch';
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { config, ensureDataDir } from './config.js';
+import { config, ensureDataDir, hasTwitterUserAuth } from './config.js';
 import { logger } from './logger.js';
 import { uploadToR2 } from './r2Client.js';
 
@@ -60,6 +60,41 @@ const GRAPHQL_TWEET_RESULT_FIELD_TOGGLES = {
 
 let cachedGuestToken = null;
 let cachedGuestTokenExpiry = 0;
+
+function isGatedTombstone(reasonType, reasonText) {
+  const normalizedType = reasonType ? String(reasonType).toLowerCase() : '';
+  if (normalizedType.includes('agegate') || normalizedType.includes('age_gated')) {
+    return true;
+  }
+  if (normalizedType.includes('protected') || normalizedType.includes('restricted')) {
+    return true;
+  }
+
+  const normalizedText = reasonText ? reasonText.toLowerCase() : '';
+  return [
+    'age-restricted',
+    'log in to view',
+    'login to view',
+    'view this media',
+    'isn\'t available to people under',
+  ].some((phrase) => normalizedText.includes(phrase));
+}
+
+function extractTombstoneMessage(result) {
+  const candidates = [
+    result.tombstone?.text?.text,
+    result.reason?.text?.text,
+    result.reason?.message,
+    result.reason?.text,
+    result.reason?.subtitle?.text,
+  ];
+  for (const value of candidates) {
+    if (!value) continue;
+    if (typeof value === 'string') return value;
+    if (typeof value?.text === 'string') return value.text;
+  }
+  return 'Tweet is unavailable (possibly age-restricted or deleted)';
+}
 
 function resolveUrl(base, relative) {
   return new URL(relative, base).toString();
@@ -194,12 +229,11 @@ function normalizeGraphqlTweet(tweetResult) {
   };
 }
 
-async function fetchTweetViaGraphql(tweetId) {
+async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWithUserAuth = true } = {}) {
   if (!config.twitterBearerToken) {
     throw new Error('Twitter bearer token is not configured');
   }
 
-  const guestToken = await getGuestToken();
   const searchParams = new URLSearchParams({
     variables: JSON.stringify({
       tweetId,
@@ -212,19 +246,35 @@ async function fetchTweetViaGraphql(tweetId) {
   });
 
   const url = `https://twitter.com/i/api/graphql/${GRAPHQL_TWEET_RESULT_QUERY_ID}/TweetResultByRestId?${searchParams.toString()}`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${config.twitterBearerToken}`,
-      'User-Agent': USER_AGENT,
-      'x-guest-token': guestToken,
-      'x-twitter-client-language': 'en',
-      'x-twitter-active-user': 'yes',
-      Accept: 'application/json',
-      Referer: 'https://twitter.com/',
-    },
-  });
+  const headers = {
+    Authorization: `Bearer ${config.twitterBearerToken}`,
+    'User-Agent': USER_AGENT,
+    'x-twitter-client-language': 'en',
+    'x-twitter-active-user': 'yes',
+    Accept: 'application/json',
+    Referer: 'https://twitter.com/',
+  };
+
+  if (useUserAuth) {
+    if (!hasTwitterUserAuth()) {
+      throw new Error('Twitter user authentication is not configured');
+    }
+    headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
+    headers['x-csrf-token'] = config.twitterCsrfToken;
+  } else {
+    const guestToken = await getGuestToken();
+    headers['x-guest-token'] = guestToken;
+  }
+
+  const response = await fetch(url, { headers });
 
   if (!response.ok) {
+    if (!useUserAuth && allowRetryWithUserAuth && response.status === 403 && hasTwitterUserAuth()) {
+      logger.info(
+        `GraphQL guest request blocked with status ${response.status}; retrying with user authentication for tweet ${tweetId}`,
+      );
+      return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+    }
     throw new Error(`GraphQL tweet lookup failed (${response.status})`);
   }
 
@@ -235,10 +285,14 @@ async function fetchTweetViaGraphql(tweetId) {
   }
 
   if (result.__typename && result.__typename.includes('Tombstone')) {
-    const message =
-      result.tombstone?.text?.text ||
-      result.reason?.message ||
-      'Tweet is unavailable (possibly age-restricted or deleted)';
+    const reasonType = result.reason?.__typename || result.tombstone?.text?.__typename || '';
+    const message = extractTombstoneMessage(result);
+    if (!useUserAuth && allowRetryWithUserAuth && hasTwitterUserAuth() && isGatedTombstone(reasonType, message)) {
+      logger.info(
+        `GraphQL metadata indicates gated content (${reasonType || 'unknown reason'}); retrying with user authentication for tweet ${tweetId}`,
+      );
+      return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+    }
     throw new Error(message);
   }
 
@@ -311,6 +365,11 @@ async function fetchTweetMetadata(tweetId) {
   }
 
   const reason = lastError?.message || 'No video variants found in tweet metadata';
+  if (isGatedTombstone('', reason) && !hasTwitterUserAuth()) {
+    throw new Error(
+      `Unable to retrieve tweet metadata: ${reason}. Provide TWITTER_AUTH_TOKEN and TWITTER_CT0 to allow the bot to access gated tweets.`,
+    );
+  }
   throw new Error(`Unable to retrieve tweet metadata: ${reason}`);
 }
 

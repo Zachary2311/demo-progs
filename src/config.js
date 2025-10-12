@@ -23,7 +23,13 @@ export const config = {
   twitterBearerToken:
     process.env.TWITTER_BEARER_TOKEN ||
     'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
+  twitterAuthToken: process.env.TWITTER_AUTH_TOKEN,
+  twitterCsrfToken: process.env.TWITTER_CT0,
 };
+
+export function hasTwitterUserAuth() {
+  return Boolean(config.twitterAuthToken && config.twitterCsrfToken);
+}
 
 export function ensureDataDir() {
   if (!fs.existsSync(config.dataDir)) {
