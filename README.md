@@ -41,8 +41,9 @@ This project provides a Discord bot that downloads video content from X/Twitter 
    | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Cloudflare R2 credentials |
    | `R2_ENDPOINT` | R2 S3-compatible endpoint |
    | `R2_BUCKET` | Bucket name for uploads |
-   | `R2_PUBLIC_BASE_URL` | Public base URL that serves uploaded files |
-   | `BOT_DATA_DIR` | Optional path for temporary downloads (defaults to `./data`) |
+| `R2_PUBLIC_BASE_URL` | Public base URL that serves uploaded files |
+| `BOT_DATA_DIR` | Optional path for temporary downloads (defaults to `./data`) |
+| `TWITTER_BEARER_TOKEN` | Optional override for the built-in guest bearer token used when falling back to X GraphQL APIs |
 
 3. Register slash commands (only needed after initial setup or when commands change):
 
@@ -68,3 +69,4 @@ This project provides a Discord bot that downloads video content from X/Twitter 
 - The bot keeps downloads on disk only until the Cloudflare R2 upload completes. Failed uploads also clean up temporary files.
 - HLS handling respects `EXT-X-MAP`, `EXT-X-BYTERANGE`, and discontinuities to avoid corrupt output. When transport stream segments are encountered, they are remuxed to MP4 before upload.
 - Logging is provided through `winston`. Adjust `LOG_LEVEL` to control verbosity.
+- Tweet metadata is first fetched from syndication endpoints; if those fail, the bot falls back to X's GraphQL TweetResult API using a guest bearer token. Provide `TWITTER_BEARER_TOKEN` if the baked-in token stops working.

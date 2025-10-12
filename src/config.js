@@ -20,6 +20,9 @@ export const config = {
     publicBaseUrl: process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, ''),
   },
   dataDir: path.resolve(process.env.BOT_DATA_DIR || path.join(rootDir, 'data')),
+  twitterBearerToken:
+    process.env.TWITTER_BEARER_TOKEN ||
+    'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
 };
 
 export function ensureDataDir() {
