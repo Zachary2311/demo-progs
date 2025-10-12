@@ -30,14 +30,60 @@ function parseByteRange(value, previousEnd = 0) {
   return { length, offset, end: offset + length };
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, { parser = (res) => res.json(), headers = {} } = {}) {
   const response = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
+      Referer: 'https://platform.twitter.com/',
+      'Accept-Language': 'en-US,en;q=0.9',
+      ...headers,
+    },
   });
   if (!response.ok) {
     throw new Error(`Failed to fetch JSON (${response.status})`);
   }
-  return response.json();
+  return parser(response);
+}
+
+async function fetchTweetMetadata(tweetId) {
+  const endpoints = [
+    {
+      url: `https://cdn.syndication.twimg.com/widgets/tweet?id=${tweetId}&lang=en`,
+      parser: (res) => res.json(),
+    },
+    {
+      url: `https://r.jina.ai/https://cdn.syndication.twimg.com/widgets/tweet?id=${tweetId}&lang=en`,
+      parser: async (res) => JSON.parse(await res.text()),
+    },
+    {
+      url: `https://r.jina.ai/https://cdn.syndication.twimg.com/tweet?id=${tweetId}&lang=en`,
+      parser: async (res) => JSON.parse(await res.text()),
+    },
+  ];
+
+  let lastError;
+  const hasVariants = (payload) =>
+    Array.isArray(payload?.videoVariants) ||
+    Array.isArray(payload?.mediaDetails) ||
+    Array.isArray(payload?.extended_entities?.media);
+
+  for (const endpoint of endpoints) {
+    try {
+      const data = await fetchJson(endpoint.url, { parser: endpoint.parser });
+      if (data && hasVariants(data)) {
+        return data;
+      }
+      lastError = new Error('No video variants found in response payload');
+      logger.warn(`No video variants present in response from ${endpoint.url}`);
+    } catch (error) {
+      lastError = error;
+      logger.warn(`Failed to load tweet metadata from ${endpoint.url}: ${error.message}`);
+    }
+  }
+
+  const reason = lastError?.message || 'No video variants found in tweet metadata';
+  throw new Error(`Unable to retrieve tweet metadata: ${reason}`);
 }
 
 function getTweetId(tweetUrl) {
@@ -233,11 +279,31 @@ async function downloadVariant(variant, tweetId) {
 
 export async function downloadTweetVideo(tweetUrl) {
   const id = getTweetId(tweetUrl);
-  const data = await fetchJson(`https://cdn.syndication.twimg.com/widgets/tweet?id=${id}`);
-  if (!data?.videoVariants) {
+  const data = await fetchTweetMetadata(id);
+  let variants = Array.isArray(data.videoVariants) ? data.videoVariants : null;
+  if (!variants && Array.isArray(data.mediaDetails)) {
+    const videoDetail = data.mediaDetails.find((detail) => Array.isArray(detail.variants));
+    if (videoDetail) {
+      variants = videoDetail.variants;
+    }
+  }
+  if (!variants && Array.isArray(data.extended_entities?.media)) {
+    const media = data.extended_entities.media.find((item) => item.type === 'video' || item.type === 'animated_gif');
+    if (media?.video_info?.variants) {
+      variants = media.video_info.variants.map((variant) => ({
+        content_type: variant.content_type,
+        bitrate: variant.bitrate,
+        src: variant.url,
+        type: variant.content_type,
+      }));
+    }
+  }
+
+  if (!Array.isArray(variants) || variants.length === 0) {
     throw new Error('Tweet does not contain downloadable video');
   }
-  const variant = selectVariant(data.videoVariants);
+
+  const variant = selectVariant(variants);
   const download = await downloadVariant(variant, id);
   const stats = await fs.promises.stat(download.filePath);
   return {
