@@ -186,15 +186,12 @@ function unwrapUserNode(node) {
   return current;
 }
 
-function normalizeGraphqlTweet(tweetResult) {
-  const tweetNode = unwrapTweetNode(tweetResult);
-  if (!tweetNode?.legacy) {
+function normalizeLegacyTweet(legacyTweet, userInfo) {
+  if (!legacyTweet) {
     return null;
   }
 
-  const userNode = unwrapUserNode(tweetNode.core?.user_results?.result);
-  const legacy = tweetNode.legacy;
-  const mediaItems = legacy.extended_entities?.media || [];
+  const mediaItems = legacyTweet.extended_entities?.media || [];
   const normalizedMedia = mediaItems.map((media) => ({
     type: media.type,
     variants:
@@ -211,11 +208,11 @@ function normalizeGraphqlTweet(tweetResult) {
   const variants = normalizedMedia.flatMap((media) => media.variants);
 
   return {
-    id: legacy.id_str,
-    title: legacy.full_text,
+    id: legacyTweet.id_str,
+    title: legacyTweet.full_text || legacyTweet.text,
     author: {
-      name: userNode?.legacy?.name || userNode?.name,
-      screenName: userNode?.legacy?.screen_name || userNode?.screen_name,
+      name: userInfo?.name,
+      screenName: userInfo?.screen_name,
     },
     videoVariants: variants,
     mediaDetails: normalizedMedia,
@@ -227,6 +224,16 @@ function normalizeGraphqlTweet(tweetResult) {
       })),
     },
   };
+}
+
+function normalizeGraphqlTweet(tweetResult) {
+  const tweetNode = unwrapTweetNode(tweetResult);
+  if (!tweetNode?.legacy) {
+    return null;
+  }
+
+  const userNode = unwrapUserNode(tweetNode.core?.user_results?.result);
+  return normalizeLegacyTweet(tweetNode.legacy, userNode?.legacy || userNode);
 }
 
 async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWithUserAuth = true } = {}) {
@@ -262,8 +269,18 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
     headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
     headers['x-csrf-token'] = config.twitterCsrfToken;
   } else {
-    const guestToken = await getGuestToken();
-    headers['x-guest-token'] = guestToken;
+    try {
+      const guestToken = await getGuestToken();
+      headers['x-guest-token'] = guestToken;
+    } catch (error) {
+      if (allowRetryWithUserAuth && hasTwitterUserAuth()) {
+        logger.info(
+          `Guest token activation failed (${error.message}); retrying GraphQL with user authentication for tweet ${tweetId}`,
+        );
+        return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+      }
+      throw error;
+    }
   }
 
   const response = await fetch(url, { headers });
@@ -297,6 +314,53 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
   }
 
   const normalized = normalizeGraphqlTweet(result);
+  if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
+    throw new Error('Tweet does not contain downloadable media');
+  }
+
+  return normalized;
+}
+
+async function fetchTweetViaRestApi(tweetId) {
+  if (!hasTwitterUserAuth()) {
+    throw new Error('Twitter user authentication is not configured');
+  }
+
+  if (!config.twitterBearerToken) {
+    throw new Error('Twitter bearer token is not configured');
+  }
+
+  const params = new URLSearchParams({
+    id: tweetId,
+    tweet_mode: 'extended',
+    include_entities: 'true',
+    include_ext_alt_text: 'true',
+  });
+
+  const url = `https://twitter.com/i/api/1.1/statuses/show.json?${params.toString()}`;
+  const headers = {
+    Authorization: `Bearer ${config.twitterBearerToken}`,
+    'User-Agent': USER_AGENT,
+    'x-twitter-active-user': 'yes',
+    'x-twitter-client-language': 'en',
+    Cookie: `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`,
+    'x-csrf-token': config.twitterCsrfToken,
+    Accept: 'application/json',
+    Referer: 'https://twitter.com/',
+  };
+
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    throw new Error(`Authenticated REST tweet lookup failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  if (payload?.errors?.length) {
+    const [firstError] = payload.errors;
+    throw new Error(firstError?.message || 'Twitter API returned an unknown error');
+  }
+
+  const normalized = normalizeLegacyTweet(payload, payload?.user);
   if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
     throw new Error('Tweet does not contain downloadable media');
   }
@@ -362,6 +426,15 @@ async function fetchTweetMetadata(tweetId) {
   } catch (error) {
     lastError = error;
     logger.warn(`GraphQL metadata fallback failed: ${error.message}`);
+    if (hasTwitterUserAuth()) {
+      try {
+        logger.info(`Attempting authenticated REST metadata for tweet ${tweetId}`);
+        return await fetchTweetViaRestApi(tweetId);
+      } catch (restError) {
+        lastError = restError;
+        logger.warn(`Authenticated REST metadata fallback failed: ${restError.message}`);
+      }
+    }
   }
 
   const reason = lastError?.message || 'No video variants found in tweet metadata';
