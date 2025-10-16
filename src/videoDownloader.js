@@ -268,6 +268,9 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
     }
     headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
     headers['x-csrf-token'] = config.twitterCsrfToken;
+    headers['x-twitter-auth-type'] = 'OAuth2Session';
+    headers['x-twitter-client-version'] = '9c0c2e5a0a52a57d8f1a686e1d8b7c32';
+    headers['x-twitter-client-name'] = 'TwitterWebNext';
   } else {
     try {
       const guestToken = await getGuestToken();
@@ -345,6 +348,9 @@ async function fetchTweetViaRestApi(tweetId) {
     'x-twitter-client-language': 'en',
     Cookie: `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`,
     'x-csrf-token': config.twitterCsrfToken,
+    'x-twitter-auth-type': 'OAuth2Session',
+    'x-twitter-client-version': '9c0c2e5a0a52a57d8f1a686e1d8b7c32',
+    'x-twitter-client-name': 'TwitterWebNext',
     Accept: 'application/json',
     Referer: 'https://twitter.com/',
   };
