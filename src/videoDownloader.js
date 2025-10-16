@@ -61,6 +61,38 @@ const GRAPHQL_TWEET_RESULT_FIELD_TOGGLES = {
 let cachedGuestToken = null;
 let cachedGuestTokenExpiry = 0;
 
+function buildTwitterHeaders({ useUserAuth = false, extra = {} } = {}) {
+  const headers = {
+    Authorization: `Bearer ${config.twitterBearerToken}`,
+    'User-Agent': USER_AGENT,
+    Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Origin: 'https://twitter.com',
+    Referer: 'https://twitter.com/',
+    Pragma: 'no-cache',
+    'Cache-Control': 'no-cache',
+    'x-twitter-active-user': 'yes',
+    'x-twitter-client-language': 'en',
+  };
+
+  if (useUserAuth) {
+    if (!hasTwitterUserAuth()) {
+      throw new Error('Twitter user authentication is not configured');
+    }
+    headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
+    headers['x-csrf-token'] = config.twitterCsrfToken;
+    headers['x-twitter-auth-type'] = 'OAuth2Session';
+    if (config.twitterClientName) {
+      headers['x-twitter-client-name'] = config.twitterClientName;
+    }
+    if (config.twitterClientVersion) {
+      headers['x-twitter-client-version'] = config.twitterClientVersion;
+    }
+  }
+
+  return { ...headers, ...extra };
+}
+
 function isGatedTombstone(reasonType, reasonText) {
   const normalizedType = reasonType ? String(reasonType).toLowerCase() : '';
   if (normalizedType.includes('agegate') || normalizedType.includes('age_gated')) {
@@ -123,11 +155,10 @@ async function getGuestToken() {
   const response = await fetch('https://api.twitter.com/1.1/guest/activate.json', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.twitterBearerToken}`,
-      'User-Agent': USER_AGENT,
+      ...buildTwitterHeaders(),
       'Content-Type': 'application/json',
-      Accept: 'application/json',
     },
+    body: '{}',
   });
 
   if (!response.ok) {
@@ -241,40 +272,26 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
     throw new Error('Twitter bearer token is not configured');
   }
 
-  const searchParams = new URLSearchParams({
-    variables: JSON.stringify({
-      tweetId,
-      withCommunity: true,
-      includePromotedContent: false,
-      withVoice: true,
-    }),
-    features: JSON.stringify(GRAPHQL_TWEET_RESULT_FEATURES),
-    fieldToggles: JSON.stringify(GRAPHQL_TWEET_RESULT_FIELD_TOGGLES),
-  });
-
-  const url = `https://twitter.com/i/api/graphql/${GRAPHQL_TWEET_RESULT_QUERY_ID}/TweetResultByRestId?${searchParams.toString()}`;
-  const headers = {
-    Authorization: `Bearer ${config.twitterBearerToken}`,
-    'User-Agent': USER_AGENT,
-    'x-twitter-client-language': 'en',
-    'x-twitter-active-user': 'yes',
-    Accept: 'application/json',
-    Referer: 'https://twitter.com/',
+  const variables = {
+    tweetId,
+    withCommunity: true,
+    includePromotedContent: false,
+    withVoice: true,
   };
 
-  if (useUserAuth) {
-    if (!hasTwitterUserAuth()) {
-      throw new Error('Twitter user authentication is not configured');
-    }
-    headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
-    headers['x-csrf-token'] = config.twitterCsrfToken;
-    headers['x-twitter-auth-type'] = 'OAuth2Session';
-    headers['x-twitter-client-version'] = '9c0c2e5a0a52a57d8f1a686e1d8b7c32';
-    headers['x-twitter-client-name'] = 'TwitterWebNext';
-  } else {
+  const graphqlRequestBody = {
+    variables,
+    features: GRAPHQL_TWEET_RESULT_FEATURES,
+    fieldToggles: GRAPHQL_TWEET_RESULT_FIELD_TOGGLES,
+  };
+
+  const baseUrl = `https://twitter.com/i/api/graphql/${GRAPHQL_TWEET_RESULT_QUERY_ID}/TweetResultByRestId`;
+  const baseHeaders = buildTwitterHeaders({ useUserAuth });
+
+  if (!useUserAuth) {
     try {
       const guestToken = await getGuestToken();
-      headers['x-guest-token'] = guestToken;
+      baseHeaders['x-guest-token'] = guestToken;
     } catch (error) {
       if (allowRetryWithUserAuth && hasTwitterUserAuth()) {
         logger.info(
@@ -286,7 +303,21 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
     }
   }
 
-  const response = await fetch(url, { headers });
+  const postHeaders = { ...baseHeaders, 'Content-Type': 'application/json' };
+  let response = await fetch(baseUrl, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify(graphqlRequestBody),
+  });
+
+  if (!response.ok && response.status === 405) {
+    const searchParams = new URLSearchParams({
+      variables: JSON.stringify(variables),
+      features: JSON.stringify(GRAPHQL_TWEET_RESULT_FEATURES),
+      fieldToggles: JSON.stringify(GRAPHQL_TWEET_RESULT_FIELD_TOGGLES),
+    });
+    response = await fetch(`${baseUrl}?${searchParams.toString()}`, { headers: baseHeaders });
+  }
 
   if (!response.ok) {
     if (!useUserAuth && allowRetryWithUserAuth && response.status === 403 && hasTwitterUserAuth()) {
@@ -340,20 +371,33 @@ async function fetchTweetViaRestApi(tweetId) {
     include_ext_alt_text: 'true',
   });
 
-  const url = `https://twitter.com/i/api/1.1/statuses/show.json?${params.toString()}`;
-  const headers = {
-    Authorization: `Bearer ${config.twitterBearerToken}`,
-    'User-Agent': USER_AGENT,
-    'x-twitter-active-user': 'yes',
-    'x-twitter-client-language': 'en',
-    Cookie: `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`,
-    'x-csrf-token': config.twitterCsrfToken,
-    'x-twitter-auth-type': 'OAuth2Session',
-    'x-twitter-client-version': '9c0c2e5a0a52a57d8f1a686e1d8b7c32',
-    'x-twitter-client-name': 'TwitterWebNext',
-    Accept: 'application/json',
-    Referer: 'https://twitter.com/',
+  const additionalRestParams = {
+    include_profile_interstitial_type: '1',
+    include_blocking: '1',
+    include_blocked_by: '1',
+    include_followed_by: '1',
+    include_want_retweets: '1',
+    include_mute_edge: '1',
+    include_can_dm: '1',
+    include_can_media_tag: '1',
+    include_ext_media_color: 'true',
+    include_ext_media_availability: 'true',
+    include_ext_sensitive_media_warning: 'true',
+    include_ext_edit_control: 'true',
+    include_ext_limited_action_results: 'false',
+    include_quote_count: 'true',
+    include_reply_count: '1',
+    simple_quoted_tweet: 'true',
+    include_ext_vibe: 'true',
+    send_error_codes: 'true',
   };
+
+  for (const [key, value] of Object.entries(additionalRestParams)) {
+    params.set(key, value);
+  }
+
+  const url = `https://twitter.com/i/api/1.1/statuses/show.json?${params.toString()}`;
+  const headers = buildTwitterHeaders({ useUserAuth: true });
 
   const response = await fetch(url, { headers });
   if (!response.ok) {

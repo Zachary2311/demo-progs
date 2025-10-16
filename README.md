@@ -41,10 +41,11 @@ This project provides a Discord bot that downloads video content from X/Twitter 
    | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Cloudflare R2 credentials |
    | `R2_ENDPOINT` | R2 S3-compatible endpoint |
    | `R2_BUCKET` | Bucket name for uploads |
-| `R2_PUBLIC_BASE_URL` | Public base URL that serves uploaded files |
-| `BOT_DATA_DIR` | Optional path for temporary downloads (defaults to `./data`) |
-| `TWITTER_BEARER_TOKEN` | Optional override for the built-in guest bearer token used when falling back to X GraphQL APIs |
-| `TWITTER_AUTH_TOKEN` / `TWITTER_CT0` | Optional user cookies for accessing age-restricted or otherwise gated tweets |
+   | `R2_PUBLIC_BASE_URL` | Public base URL that serves uploaded files |
+   | `BOT_DATA_DIR` | Optional path for temporary downloads (defaults to `./data`) |
+   | `TWITTER_BEARER_TOKEN` | Optional override for the built-in guest bearer token used when falling back to X GraphQL APIs |
+   | `TWITTER_AUTH_TOKEN` / `TWITTER_CT0` | Optional user cookies for accessing age-restricted or otherwise gated tweets |
+   | `TWITTER_CLIENT_NAME` / `TWITTER_CLIENT_VERSION` | Optional overrides for the reported web client metadata when X starts enforcing newer versions |
 
 3. Register slash commands (only needed after initial setup or when commands change):
 
@@ -70,4 +71,4 @@ This project provides a Discord bot that downloads video content from X/Twitter 
 - The bot keeps downloads on disk only until the Cloudflare R2 upload completes. Failed uploads also clean up temporary files.
 - HLS handling respects `EXT-X-MAP`, `EXT-X-BYTERANGE`, and discontinuities to avoid corrupt output. When transport stream segments are encountered, they are remuxed to MP4 before upload.
 - Logging is provided through `winston`. Adjust `LOG_LEVEL` to control verbosity.
-- Tweet metadata is first fetched from syndication endpoints; if those fail, the bot falls back to X's GraphQL TweetResult API using a guest bearer token. Provide `TWITTER_BEARER_TOKEN` if the baked-in token stops working. Configure `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` (copied from an authenticated browser session) to allow the bot to resolve age-restricted or otherwise gated tweets when the guest flow is denied, and to enable the final REST API fallback when GraphQL responses omit media variants.
+- Tweet metadata is first fetched from syndication endpoints; if those fail, the bot falls back to X's GraphQL TweetResult API using a guest bearer token. Provide `TWITTER_BEARER_TOKEN` if the baked-in token stops working. Configure `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` (copied from an authenticated browser session) to allow the bot to resolve age-restricted or otherwise gated tweets when the guest flow is denied, and to enable the final REST API fallback when GraphQL responses omit media variants. If the X APIs begin returning 403 responses despite valid cookies, set `TWITTER_CLIENT_NAME`/`TWITTER_CLIENT_VERSION` to match the values observed in your browser's network inspector so the bot sends the same client metadata.
