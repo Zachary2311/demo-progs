@@ -12,6 +12,8 @@ import { uploadToR2 } from './r2Client.js';
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36';
 
+const TWITTER_WEB_BASES = ['https://twitter.com', 'https://x.com'];
+
 const GRAPHQL_TWEET_RESULT_QUERY_ID = 'WvlrBJ2bz8AuwoszWyie8A';
 const GRAPHQL_TWEET_RESULT_FEATURES = {
   creator_subscriptions_tweet_preview_api_enabled: true,
@@ -61,18 +63,44 @@ const GRAPHQL_TWEET_RESULT_FIELD_TOGGLES = {
 let cachedGuestToken = null;
 let cachedGuestTokenExpiry = 0;
 
-function buildTwitterHeaders({ useUserAuth = false, extra = {} } = {}) {
+function resolveTwitterOrigin(host = TWITTER_WEB_BASES[0]) {
+  try {
+    const { origin } = new URL(host);
+    return origin;
+  } catch (error) {
+    logger.warn(`Invalid Twitter host provided (${host}); defaulting to https://twitter.com`);
+    return 'https://twitter.com';
+  }
+}
+
+function buildTwitterHeaders({
+  useUserAuth = false,
+  host = TWITTER_WEB_BASES[0],
+  refererPath = '/',
+  extra = {},
+} = {}) {
+  const origin = resolveTwitterOrigin(host);
+  let referer;
+  try {
+    referer = new URL(refererPath, origin).toString();
+  } catch (error) {
+    referer = origin;
+  }
+
   const headers = {
     Authorization: `Bearer ${config.twitterBearerToken}`,
     'User-Agent': USER_AGENT,
     Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    Origin: 'https://twitter.com',
-    Referer: 'https://twitter.com/',
+    Origin: origin,
+    Referer: referer,
     Pragma: 'no-cache',
     'Cache-Control': 'no-cache',
     'x-twitter-active-user': 'yes',
     'x-twitter-client-language': 'en',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
   };
 
   if (useUserAuth) {
@@ -82,13 +110,12 @@ function buildTwitterHeaders({ useUserAuth = false, extra = {} } = {}) {
     headers.Cookie = `auth_token=${config.twitterAuthToken}; ct0=${config.twitterCsrfToken}`;
     headers['x-csrf-token'] = config.twitterCsrfToken;
     headers['x-twitter-auth-type'] = 'OAuth2Session';
-    if (config.twitterClientName) {
-      headers['x-twitter-client-name'] = config.twitterClientName;
-    }
-    if (config.twitterClientVersion) {
-      headers['x-twitter-client-version'] = config.twitterClientVersion;
-    }
   }
+
+  if (config.twitterClientName) {
+    headers['x-twitter-client-name'] = config.twitterClientName;
+  }
+  headers['x-twitter-client-version'] = config.twitterClientVersion || 'TwitterWeb-16.10.1';
 
   return { ...headers, ...extra };
 }
@@ -152,27 +179,42 @@ async function getGuestToken() {
     return cachedGuestToken;
   }
 
-  const response = await fetch('https://api.twitter.com/1.1/guest/activate.json', {
-    method: 'POST',
-    headers: {
-      ...buildTwitterHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: '{}',
-  });
+  let lastError;
+  for (const host of TWITTER_WEB_BASES) {
+    try {
+      const response = await fetch('https://api.twitter.com/1.1/guest/activate.json', {
+        method: 'POST',
+        headers: {
+          ...buildTwitterHeaders({ host }),
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      });
 
-  if (!response.ok) {
-    throw new Error(`Failed to activate guest token (${response.status})`);
+      if (!response.ok) {
+        const error = new Error(`Failed to activate guest token (${response.status})`);
+        error.retryWithAlternateHost = response.status === 403;
+        throw error;
+      }
+
+      const payload = await response.json();
+      if (!payload?.guest_token) {
+        throw new Error('Guest token response did not include a token');
+      }
+
+      cachedGuestToken = payload.guest_token;
+      cachedGuestTokenExpiry = now + 10 * 60 * 1000; // 10 minutes cache window
+      return cachedGuestToken;
+    } catch (error) {
+      lastError = error;
+      logger.warn(`Guest activation via ${host} failed: ${error.message}`);
+      if (!error.retryWithAlternateHost) {
+        break;
+      }
+    }
   }
 
-  const payload = await response.json();
-  if (!payload?.guest_token) {
-    throw new Error('Guest token response did not include a token');
-  }
-
-  cachedGuestToken = payload.guest_token;
-  cachedGuestTokenExpiry = now + 10 * 60 * 1000; // 10 minutes cache window
-  return cachedGuestToken;
+  throw lastError || new Error('Failed to activate guest token');
 }
 
 function unwrapTweetNode(node) {
@@ -285,74 +327,98 @@ async function fetchTweetViaGraphql(tweetId, { useUserAuth = false, allowRetryWi
     fieldToggles: GRAPHQL_TWEET_RESULT_FIELD_TOGGLES,
   };
 
-  const baseUrl = `https://twitter.com/i/api/graphql/${GRAPHQL_TWEET_RESULT_QUERY_ID}/TweetResultByRestId`;
-  const baseHeaders = buildTwitterHeaders({ useUserAuth });
-
-  if (!useUserAuth) {
-    try {
-      const guestToken = await getGuestToken();
-      baseHeaders['x-guest-token'] = guestToken;
-    } catch (error) {
-      if (allowRetryWithUserAuth && hasTwitterUserAuth()) {
-        logger.info(
-          `Guest token activation failed (${error.message}); retrying GraphQL with user authentication for tweet ${tweetId}`,
-        );
-        return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
-      }
-      throw error;
-    }
-  }
-
-  const postHeaders = { ...baseHeaders, 'Content-Type': 'application/json' };
-  let response = await fetch(baseUrl, {
-    method: 'POST',
-    headers: postHeaders,
-    body: JSON.stringify(graphqlRequestBody),
-  });
-
-  if (!response.ok && response.status === 405) {
-    const searchParams = new URLSearchParams({
-      variables: JSON.stringify(variables),
-      features: JSON.stringify(GRAPHQL_TWEET_RESULT_FEATURES),
-      fieldToggles: JSON.stringify(GRAPHQL_TWEET_RESULT_FIELD_TOGGLES),
+  let lastError;
+  for (const host of TWITTER_WEB_BASES) {
+    const baseUrl = `${resolveTwitterOrigin(host)}/i/api/graphql/${GRAPHQL_TWEET_RESULT_QUERY_ID}/TweetResultByRestId`;
+    const baseHeaders = buildTwitterHeaders({
+      useUserAuth,
+      host,
+      refererPath: `/i/status/${tweetId}`,
     });
-    response = await fetch(`${baseUrl}?${searchParams.toString()}`, { headers: baseHeaders });
-  }
 
-  if (!response.ok) {
-    if (!useUserAuth && allowRetryWithUserAuth && response.status === 403 && hasTwitterUserAuth()) {
-      logger.info(
-        `GraphQL guest request blocked with status ${response.status}; retrying with user authentication for tweet ${tweetId}`,
-      );
-      return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+    if (!useUserAuth) {
+      try {
+        const guestToken = await getGuestToken();
+        baseHeaders['x-guest-token'] = guestToken;
+      } catch (error) {
+        lastError = error;
+        logger.warn(`Guest token acquisition failed before GraphQL request via ${host}: ${error.message}`);
+        if (allowRetryWithUserAuth && hasTwitterUserAuth()) {
+          logger.info(
+            `Guest token activation failed (${error.message}); retrying GraphQL with user authentication for tweet ${tweetId}`,
+          );
+          return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+        }
+        if (!error.retryWithAlternateHost) {
+          throw error;
+        }
+        continue;
+      }
     }
-    throw new Error(`GraphQL tweet lookup failed (${response.status})`);
-  }
 
-  const payload = await response.json();
-  const result = payload?.data?.tweetResult?.result;
-  if (!result) {
-    throw new Error('Tweet metadata not returned from GraphQL');
-  }
+    const postHeaders = { ...baseHeaders, 'Content-Type': 'application/json' };
+    try {
+      let response = await fetch(baseUrl, {
+        method: 'POST',
+        headers: postHeaders,
+        body: JSON.stringify(graphqlRequestBody),
+      });
 
-  if (result.__typename && result.__typename.includes('Tombstone')) {
-    const reasonType = result.reason?.__typename || result.tombstone?.text?.__typename || '';
-    const message = extractTombstoneMessage(result);
-    if (!useUserAuth && allowRetryWithUserAuth && hasTwitterUserAuth() && isGatedTombstone(reasonType, message)) {
-      logger.info(
-        `GraphQL metadata indicates gated content (${reasonType || 'unknown reason'}); retrying with user authentication for tweet ${tweetId}`,
-      );
-      return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+      if (!response.ok && response.status === 405) {
+        const searchParams = new URLSearchParams({
+          variables: JSON.stringify(variables),
+          features: JSON.stringify(GRAPHQL_TWEET_RESULT_FEATURES),
+          fieldToggles: JSON.stringify(GRAPHQL_TWEET_RESULT_FIELD_TOGGLES),
+        });
+        response = await fetch(`${baseUrl}?${searchParams.toString()}`, { headers: baseHeaders });
+      }
+
+      if (!response.ok) {
+        if (!useUserAuth && allowRetryWithUserAuth && response.status === 403 && hasTwitterUserAuth()) {
+          logger.info(
+            `GraphQL guest request via ${host} blocked with status ${response.status}; retrying with user authentication for tweet ${tweetId}`,
+          );
+          return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+        }
+        const error = new Error(`GraphQL tweet lookup failed (${response.status})`);
+        error.retryWithAlternateHost = response.status === 403 || response.status === 404;
+        throw error;
+      }
+
+      const payload = await response.json();
+      const result = payload?.data?.tweetResult?.result;
+      if (!result) {
+        throw new Error('Tweet metadata not returned from GraphQL');
+      }
+
+      if (result.__typename && result.__typename.includes('Tombstone')) {
+        const reasonType = result.reason?.__typename || result.tombstone?.text?.__typename || '';
+        const message = extractTombstoneMessage(result);
+        if (!useUserAuth && allowRetryWithUserAuth && hasTwitterUserAuth() && isGatedTombstone(reasonType, message)) {
+          logger.info(
+            `GraphQL metadata indicates gated content (${reasonType || 'unknown reason'}); retrying with user authentication for tweet ${tweetId}`,
+          );
+          return fetchTweetViaGraphql(tweetId, { useUserAuth: true, allowRetryWithUserAuth: false });
+        }
+        throw new Error(message);
+      }
+
+      const normalized = normalizeGraphqlTweet(result);
+      if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
+        throw new Error('Tweet does not contain downloadable media');
+      }
+
+      return normalized;
+    } catch (error) {
+      lastError = error;
+      logger.warn(`GraphQL metadata request via ${host} failed: ${error.message}`);
+      if (!error.retryWithAlternateHost) {
+        throw error;
+      }
     }
-    throw new Error(message);
   }
 
-  const normalized = normalizeGraphqlTweet(result);
-  if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
-    throw new Error('Tweet does not contain downloadable media');
-  }
-
-  return normalized;
+  throw lastError || new Error('GraphQL tweet lookup failed');
 }
 
 async function fetchTweetViaRestApi(tweetId) {
@@ -396,26 +462,41 @@ async function fetchTweetViaRestApi(tweetId) {
     params.set(key, value);
   }
 
-  const url = `https://twitter.com/i/api/1.1/statuses/show.json?${params.toString()}`;
-  const headers = buildTwitterHeaders({ useUserAuth: true });
+  let lastError;
+  for (const host of TWITTER_WEB_BASES) {
+    const url = `${resolveTwitterOrigin(host)}/i/api/1.1/statuses/show.json?${params.toString()}`;
+    const headers = buildTwitterHeaders({ useUserAuth: true, host, refererPath: `/i/status/${tweetId}` });
 
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    throw new Error(`Authenticated REST tweet lookup failed (${response.status})`);
+    try {
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        const error = new Error(`Authenticated REST tweet lookup failed (${response.status})`);
+        error.retryWithAlternateHost = response.status === 403 || response.status === 404;
+        throw error;
+      }
+
+      const payload = await response.json();
+      if (payload?.errors?.length) {
+        const [firstError] = payload.errors;
+        throw new Error(firstError?.message || 'Twitter API returned an unknown error');
+      }
+
+      const normalized = normalizeLegacyTweet(payload, payload?.user);
+      if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
+        throw new Error('Tweet does not contain downloadable media');
+      }
+
+      return normalized;
+    } catch (error) {
+      lastError = error;
+      logger.warn(`Authenticated REST metadata request via ${host} failed: ${error.message}`);
+      if (!error.retryWithAlternateHost) {
+        throw error;
+      }
+    }
   }
 
-  const payload = await response.json();
-  if (payload?.errors?.length) {
-    const [firstError] = payload.errors;
-    throw new Error(firstError?.message || 'Twitter API returned an unknown error');
-  }
-
-  const normalized = normalizeLegacyTweet(payload, payload?.user);
-  if (!normalized || !Array.isArray(normalized.videoVariants) || !normalized.videoVariants.length) {
-    throw new Error('Tweet does not contain downloadable media');
-  }
-
-  return normalized;
+  throw lastError || new Error('Authenticated REST tweet lookup failed');
 }
 
 async function fetchJson(url, { parser = (res) => res.json(), headers = {} } = {}) {
