@@ -499,6 +499,89 @@ async function fetchTweetViaRestApi(tweetId) {
   throw lastError || new Error('Authenticated REST tweet lookup failed');
 }
 
+async function fetchTweetViaApiV2(tweetId) {
+  const bearer = config.xApiBearerToken || config.twitterBearerToken;
+  if (!bearer) {
+    throw new Error('Missing X API bearer token');
+  }
+
+  const url = new URL(`https://api.x.com/2/tweets/${tweetId}`);
+  url.searchParams.set('expansions', 'attachments.media_keys,author_id');
+  url.searchParams.set('media.fields', 'variants,type,duration_ms,preview_image_url');
+  url.searchParams.set('user.fields', 'name,username');
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+      'User-Agent': USER_AGENT,
+      Accept: 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`X API v2 lookup failed (${res.status})`);
+  }
+
+  const data = await res.json();
+  const tweet = data?.data;
+  if (!tweet) {
+    throw new Error('X API v2 response did not include tweet data');
+  }
+
+  const includes = data.includes || {};
+  const mediaItems = (includes.media || []).filter(
+    (item) => item?.type === 'video' || item?.type === 'animated_gif',
+  );
+
+  if (!mediaItems.length) {
+    throw new Error('No video variants on this post');
+  }
+
+  const variants = mediaItems
+    .flatMap((item) => (Array.isArray(item?.variants) ? item.variants : []))
+    .filter((variant) => Boolean(variant?.url))
+    .map((variant) => ({
+      src: variant.url,
+      bitrate: variant.bitrate,
+      content_type: variant.content_type,
+      type: variant.content_type,
+    }));
+
+  if (!variants.length) {
+    throw new Error('No video variants on this post');
+  }
+
+  const users = Array.isArray(includes.users) ? includes.users : [];
+  const author = users.find((user) => user?.id === tweet.author_id) || users[0];
+
+  const mediaDetails = mediaItems.map((item) => ({
+    media_key: item.media_key,
+    type: item.type,
+    duration_ms: item.duration_ms,
+    preview_image_url: item.preview_image_url,
+    variants: (Array.isArray(item.variants) ? item.variants : [])
+      .filter((variant) => Boolean(variant?.url))
+      .map((variant) => ({
+        src: variant.url,
+        bitrate: variant.bitrate,
+        content_type: variant.content_type,
+        type: variant.content_type,
+      })),
+  }));
+
+  return {
+    id: tweet.id,
+    title: tweet.text,
+    author: {
+      name: author?.name,
+      screenName: author?.username,
+    },
+    videoVariants: variants,
+    mediaDetails,
+  };
+}
+
 async function fetchJson(url, { parser = (res) => res.json(), headers = {} } = {}) {
   const response = await fetch(url, {
     headers: {
@@ -516,6 +599,16 @@ async function fetchJson(url, { parser = (res) => res.json(), headers = {} } = {
 }
 
 async function fetchTweetMetadata(tweetId) {
+  let lastError;
+
+  try {
+    return await fetchTweetViaApiV2(tweetId);
+  } catch (error) {
+    lastError = error;
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`v2 API lookup failed: ${message}`);
+  }
+
   const endpoints = [
     {
       url: `https://cdn.syndication.twimg.com/widgets/tweet?id=${tweetId}&lang=en`,
@@ -531,7 +624,6 @@ async function fetchTweetMetadata(tweetId) {
     },
   ];
 
-  let lastError;
   const hasVariants = (payload) =>
     Array.isArray(payload?.videoVariants) ||
     Array.isArray(payload?.mediaDetails) ||

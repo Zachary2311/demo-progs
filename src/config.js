@@ -27,6 +27,7 @@ export const config = {
   twitterCsrfToken: process.env.TWITTER_CT0,
   twitterClientName: process.env.TWITTER_CLIENT_NAME || 'TwitterWebNext',
   twitterClientVersion: process.env.TWITTER_CLIENT_VERSION,
+  xApiBearerToken: process.env.X_API_BEARER,
 };
 
 export function hasTwitterUserAuth() {
