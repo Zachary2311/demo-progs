@@ -1,0 +1,418 @@
+// Prisma Schema for LMS Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Authentication & User Management
+// ============================================
+
+model User {
+  id                String   @id @default(uuid())
+  discordId         String   @unique
+  username          String
+  discriminator     String?
+  email             String?  @unique
+  avatar            String?
+  refreshToken      String?  @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  roles             UserRole[]
+  enrollments       CourseEnrollment[]
+  createdCourses    Course[]           @relation("InstructorCourses")
+  quizAttempts      QuizAttempt[]
+  submissions       AssignmentSubmission[]
+  grades            Grade[]
+  notifications     Notification[]
+  analyticsEvents   AnalyticsEvent[]
+  announcements     Announcement[]
+  instructorCourses Course[]           @relation("CourseInstructor")
+
+  @@index([discordId])
+  @@index([email])
+  @@map("users")
+}
+
+model Role {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique // student, instructor, admin
+  description String?
+  createdAt   DateTime   @default(now())
+
+  // Relations
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  roleId    Int
+  createdAt DateTime @default(now())
+
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+// ============================================
+// Course Management
+// ============================================
+
+model Course {
+  id            String    @id @default(uuid())
+  title         String
+  description   String    @db.Text
+  category      String?
+  tags          String?   @db.Text // JSON array
+  thumbnail     String?
+  isPublished   Boolean   @default(false)
+  instructorId  String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  instructor    User              @relation("CourseInstructor", fields: [instructorId], references: [id], onDelete: Cascade)
+  creator       User              @relation("InstructorCourses", fields: [instructorId], references: [id], onDelete: Cascade)
+  modules       Module[]
+  enrollments   CourseEnrollment[]
+  announcements Announcement[]
+  prerequisites CoursePrerequisite[] @relation("Course")
+  requiredFor   CoursePrerequisite[] @relation("Prerequisite")
+  grades        Grade[]
+  analytics     AnalyticsEvent[]
+
+  @@index([instructorId])
+  @@index([isPublished])
+  @@map("courses")
+}
+
+model CoursePrerequisite {
+  id              Int      @id @default(autoincrement())
+  courseId        String
+  prerequisiteId  String
+  createdAt       DateTime @default(now())
+
+  // Relations
+  course          Course   @relation("Course", fields: [courseId], references: [id], onDelete: Cascade)
+  prerequisite    Course   @relation("Prerequisite", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, prerequisiteId])
+  @@index([courseId])
+  @@index([prerequisiteId])
+  @@map("course_prerequisites")
+}
+
+model CourseEnrollment {
+  id          String   @id @default(uuid())
+  userId      String
+  courseId    String
+  enrolledAt  DateTime @default(now())
+  completedAt DateTime?
+  progress    Float    @default(0) // Percentage 0-100
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
+  @@map("course_enrollments")
+}
+
+model Module {
+  id          String   @id @default(uuid())
+  courseId    String
+  title       String
+  description String?  @db.Text
+  orderIndex  Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons     Lesson[]
+
+  @@index([courseId])
+  @@index([orderIndex])
+  @@map("modules")
+}
+
+model Lesson {
+  id          String   @id @default(uuid())
+  moduleId    String
+  title       String
+  content     String   @db.LongText // Rich text/Markdown
+  videoUrl    String?
+  orderIndex  Int
+  duration    Int?     // In minutes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  module      Module            @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  files       File[]
+  completions LessonCompletion[]
+  quizzes     Quiz[]
+
+  @@index([moduleId])
+  @@index([orderIndex])
+  @@map("lessons")
+}
+
+model LessonCompletion {
+  id          String   @id @default(uuid())
+  lessonId    String
+  userId      String
+  completedAt DateTime @default(now())
+
+  // Relations
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, userId])
+  @@index([lessonId])
+  @@index([userId])
+  @@map("lesson_completions")
+}
+
+// ============================================
+// Assessment System
+// ============================================
+
+model Quiz {
+  id              String   @id @default(uuid())
+  lessonId        String?
+  title           String
+  description     String?  @db.Text
+  timeLimit       Int?     // In minutes
+  passingScore    Float    @default(70)
+  maxAttempts     Int      @default(3)
+  randomizeQuestions Boolean @default(false)
+  showCorrectAnswers Boolean @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  lesson          Lesson?         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  questions       QuizQuestion[]
+  attempts        QuizAttempt[]
+
+  @@index([lessonId])
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id          String   @id @default(uuid())
+  quizId      String
+  questionText String  @db.Text
+  questionType String  // multiple_choice, true_false, short_answer
+  options     String?  @db.Text // JSON array for multiple choice
+  correctAnswer String @db.Text // JSON for multiple answers or single answer
+  explanation String?  @db.Text
+  points      Float    @default(1)
+  orderIndex  Int
+  createdAt   DateTime @default(now())
+
+  // Relations
+  quiz        Quiz            @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  answers     QuizAnswer[]
+
+  @@index([quizId])
+  @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id          String   @id @default(uuid())
+  quizId      String
+  userId      String
+  score       Float?
+  maxScore    Float
+  isPassed    Boolean  @default(false)
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+
+  // Relations
+  quiz        Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers     QuizAnswer[]
+
+  @@index([quizId])
+  @@index([userId])
+  @@map("quiz_attempts")
+}
+
+model QuizAnswer {
+  id          String   @id @default(uuid())
+  attemptId   String
+  questionId  String
+  answer      String   @db.Text // JSON
+  isCorrect   Boolean?
+  pointsEarned Float?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  attempt     QuizAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question    QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+  @@index([questionId])
+  @@map("quiz_answers")
+}
+
+model Assignment {
+  id          String   @id @default(uuid())
+  courseId    String
+  title       String
+  description String   @db.Text
+  dueDate     DateTime?
+  maxScore    Float    @default(100)
+  allowLateSubmission Boolean @default(false)
+  lateDeductionPercent Float?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  submissions AssignmentSubmission[]
+
+  @@index([courseId])
+  @@map("assignments")
+}
+
+model AssignmentSubmission {
+  id          String   @id @default(uuid())
+  assignmentId String
+  userId      String
+  content     String?  @db.Text
+  fileUrl     String?
+  submittedAt DateTime @default(now())
+  gradedAt    DateTime?
+  score       Float?
+  feedback    String?  @db.Text
+  isLate      Boolean  @default(false)
+
+  // Relations
+  assignment  Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId])
+  @@index([userId])
+  @@map("assignment_submissions")
+}
+
+model Grade {
+  id          String   @id @default(uuid())
+  userId      String
+  courseId    String
+  overallGrade Float   // 0-100
+  letterGrade String?  // A, B, C, D, F
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
+  @@map("grades")
+}
+
+// ============================================
+// File Management
+// ============================================
+
+model File {
+  id          String   @id @default(uuid())
+  lessonId    String?
+  filename    String
+  originalName String
+  mimeType    String
+  size        Int
+  url         String
+  uploadedAt  DateTime @default(now())
+
+  // Relations
+  lesson      Lesson?  @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId])
+  @@map("files")
+}
+
+// ============================================
+// Communication
+// ============================================
+
+model Announcement {
+  id          String   @id @default(uuid())
+  courseId    String
+  authorId    String
+  title       String
+  content     String   @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  author      User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@index([authorId])
+  @@map("announcements")
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  message     String   @db.Text
+  type        String   // enrollment, grade, announcement, deadline, system
+  isRead      Boolean  @default(false)
+  metadata    String?  @db.Text // JSON
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+// ============================================
+// Analytics
+// ============================================
+
+model AnalyticsEvent {
+  id          String   @id @default(uuid())
+  userId      String?
+  courseId    String?
+  eventType   String   // lesson_view, quiz_start, assignment_submit, login, etc.
+  metadata    String?  @db.Text // JSON
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  course      Course?  @relation(fields: [courseId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([courseId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("analytics_events")
+}
