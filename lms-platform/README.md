@@ -213,8 +213,18 @@ The system uses the following main tables:
 - **notifications** - User notifications
 - **analytics_events** - Event tracking
 
-## API Documentation
+## Documentation
 
+### Quick Links
+- **[Quick Start Guide](QUICK_START.md)** - Get running in 5 minutes
+- **[Docker Guide](docs/DOCKER.md)** - Complete Docker deployment instructions
+- **[UI Screenshots](docs/SCREENSHOTS.md)** - Visual guide to all pages
+- **[API Documentation](docs/API.md)** - Complete API reference
+- **[Database Schema](docs/DATABASE.md)** - Database structure and migrations
+- **[System Architecture](docs/ARCHITECTURE.md)** - Technical architecture details
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
+
+### Interactive API Documentation
 Once the backend is running, visit http://localhost:3001/api-docs for the complete Swagger API documentation.
 
 ### Key Endpoints
