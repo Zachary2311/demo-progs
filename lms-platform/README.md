@@ -92,14 +92,27 @@ A full-featured, production-ready Learning Management System with Discord OAuth2
 
 ## Quick Start
 
-### 1. Clone the Repository
+See [QUICK_START.md](QUICK_START.md) for a 5-minute setup guide!
 
+**TL;DR:**
 ```bash
-git clone <repository-url>
-cd lms-platform
+# 1. Configure Discord OAuth2 (get Client ID and Secret)
+# 2. Set environment variables
+cp .env.example .env
+# Edit .env with your Discord credentials
+
+# 3. Start with Docker Compose
+docker-compose up -d
+
+# 4. Seed database
+docker-compose exec backend npm run seed
+
+# 5. Open http://localhost
 ```
 
-### 2. Set Up Discord OAuth2
+### Detailed Setup
+
+#### 1. Set Up Discord OAuth2
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application
@@ -107,9 +120,7 @@ cd lms-platform
 4. Add redirect URI: `http://localhost:3001/api/auth/discord/callback`
 5. Copy your Client ID and Client Secret
 
-### 3. Configure Environment Variables
-
-Copy the example environment file and update with your values:
+#### 2. Configure Environment Variables
 
 ```bash
 cp .env.example .env
@@ -117,29 +128,32 @@ cp .env.example .env
 
 Edit `.env` and set:
 - Discord Client ID and Secret
-- Strong JWT secrets
+- Strong JWT secrets (min 32 characters)
 - MySQL credentials
 - Other configuration options
 
-### 4. Run with Docker (Recommended)
+#### 3. Run with Docker Compose (Recommended)
 
 ```bash
-# Start all services
 docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop all services
-docker-compose down
+docker-compose exec backend npm run seed
 ```
 
-The application will be available at:
-- Frontend: http://localhost
-- Backend API: http://localhost:3001
-- API Documentation: http://localhost:3001/api-docs
+See [docs/DOCKER.md](docs/DOCKER.md) for detailed Docker instructions.
 
-### 5. Run Locally (Alternative)
+#### 4. Run with Standalone Dockerfiles
+
+```bash
+# See docs/DOCKER.md for complete standalone instructions
+docker network create lms-network
+docker run -d --name lms-mysql --network lms-network mysql:8.0
+docker build -t lms-backend ./backend
+docker build -t lms-frontend ./frontend
+docker run -d --name lms-backend --network lms-network lms-backend
+docker run -d --name lms-frontend -p 80:80 lms-frontend
+```
+
+#### 5. Run Locally (Development)
 
 #### Backend Setup
 
