@@ -180,9 +180,8 @@ router.get('/:id/courses', authMiddleware, async (req: Request, res: Response, n
     );
   } catch (error) {
     next(error);
-    }
   }
-);
+});
 
 // Delete user (admin)
 router.delete('/:id', authMiddleware, requireRole(['admin']),

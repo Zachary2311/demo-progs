@@ -152,10 +152,47 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       throw new AppError(400, 'Refresh token required');
     }
 
-    const decoded = jwt.verify(
-      refreshToken,
-      process.env.JWT_REFRESH_SECRET || 'default-secret'
-    ) as any;
+    let decoded: any;
+    try {
+      decoded = jwt.verify(
+        refreshToken,
+        process.env.JWT_REFRESH_SECRET || 'default-secret'
+      );
+    } catch (error) {
+      throw new AppError(401, 'Invalid or expired refresh token');
+    }
+
+    // CRITICAL FIX: Verify session is valid and not revoked
+    const hashedToken = Buffer.from(refreshToken).toString('base64');
+    const session = await prisma.session.findFirst({
+      where: {
+        userId: BigInt(decoded.id),
+        refreshTokenHash: hashedToken,
+        revokedAt: null,
+        expiresAt: {
+          gt: new Date() // Check expiration
+        }
+      }
+    });
+
+    if (!session) {
+      throw new AppError(401, 'Session invalid or revoked');
+    }
+
+    // Check if user is still active
+    const user = await prisma.user.findUnique({
+      where: { id: BigInt(decoded.id) }
+    });
+
+    if (!user || user.status !== 'ACTIVE') {
+      throw new AppError(401, 'User is not active or does not exist');
+    }
+
+    // Revoke old session
+    await prisma.session.update({
+      where: { id: session.id },
+      data: { revokedAt: new Date() }
+    });
 
     const { accessToken, refreshToken: newRefreshToken } = await generateTokens(
       BigInt(decoded.id)

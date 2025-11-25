@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
+import { sanitizeContent } from '../utils/sanitizer';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -14,11 +15,13 @@ router.post('/', authMiddleware, requireRole(['instructor', 'admin']),
 
       if (!moduleId || !title) throw new AppError(400, 'Module ID and title required');
 
+      const sanitizedContent = content ? sanitizeContent(content) : null;
+
       const lesson = await prisma.lesson.create({
         data: {
           moduleId: BigInt(moduleId),
           title,
-          content,
+          content: sanitizedContent,
           contentType: contentType || 'MARKDOWN',
           durationMinutes
         }
@@ -61,11 +64,13 @@ router.put('/:id', authMiddleware, requireRole(['instructor', 'admin']),
       const { id } = req.params;
       const { title, content, contentType, isPublished, durationMinutes } = req.body;
 
+      const sanitizedContent = content !== undefined ? (content ? sanitizeContent(content) : null) : undefined;
+
       const lesson = await prisma.lesson.update({
         where: { id: BigInt(id) },
         data: {
           ...(title && { title }),
-          ...(content !== undefined && { content }),
+          ...(sanitizedContent !== undefined && { content: sanitizedContent }),
           ...(contentType && { contentType }),
           ...(isPublished !== undefined && { isPublished }),
           ...(durationMinutes && { durationMinutes })
