@@ -236,7 +236,10 @@ export class QuizController {
         })
       );
 
-      const isPassed = (totalScore / attempt.maxScore) * 100 >= attempt.quiz.passingScore;
+      // SECURITY FIX: Handle edge case of zero max score to prevent division by zero
+      const isPassed = attempt.maxScore > 0
+        ? (totalScore / attempt.maxScore) * 100 >= attempt.quiz.passingScore
+        : false;
 
       // Update attempt
       const updatedAttempt = await prisma.quizAttempt.update({

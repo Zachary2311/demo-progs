@@ -4,6 +4,7 @@ import prisma from '../config/database';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { fileTypeFromFile } from 'file-type';
 import logger from '../utils/logger';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
@@ -60,6 +61,31 @@ export class UploadController {
 
       const { lessonId } = req.body;
 
+      // SECURITY FIX: Verify file type using magic numbers (file signature)
+      const filePath = path.join(UPLOAD_DIR, req.file.filename);
+      const fileType = await fileTypeFromFile(filePath);
+
+      const allowedMimeTypes = process.env.ALLOWED_FILE_TYPES?.split(',') || [
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'application/pdf',
+        'video/mp4',
+        'video/webm',
+        'application/zip',
+      ];
+
+      // If file type is detected and doesn't match allowed types, reject it
+      if (fileType && !allowedMimeTypes.includes(fileType.mime)) {
+        // Delete the uploaded file
+        fs.unlinkSync(filePath);
+        logger.warn(`File upload rejected: Invalid file type ${fileType.mime} for ${req.file.originalname}`);
+        return res.status(400).json({
+          error: 'Invalid file type',
+          details: `File appears to be ${fileType.mime}, which is not allowed`,
+        });
+      }
+
       // Construct file URL
       const fileUrl = `${process.env.API_URL}/uploads/${req.file.filename}`;
 
@@ -68,7 +94,7 @@ export class UploadController {
           lessonId: lessonId || null,
           filename: req.file.filename,
           originalName: req.file.originalname,
-          mimeType: req.file.mimetype,
+          mimeType: fileType?.mime || req.file.mimetype,
           size: req.file.size,
           url: fileUrl,
         },

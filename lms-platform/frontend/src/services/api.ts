@@ -46,8 +46,17 @@ api.interceptors.response.use(
           originalRequest.headers.Authorization = `Bearer ${accessToken}`;
           return api(originalRequest);
         } catch (refreshError) {
-          localStorage.removeItem('accessToken');
-          localStorage.removeItem('refreshToken');
+          // SECURITY FIX: Clear ALL auth data before redirect to prevent loops
+          localStorage.clear();
+          sessionStorage.clear();
+
+          // Clear cookies if using cookie-based auth
+          document.cookie.split(';').forEach((c) => {
+            document.cookie = c
+              .replace(/^ +/, '')
+              .replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/');
+          });
+
           window.location.href = '/login';
           return Promise.reject(refreshError);
         }

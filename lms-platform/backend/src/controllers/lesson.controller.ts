@@ -3,6 +3,15 @@ import { AuthRequest } from '../types';
 import prisma from '../config/database';
 import logger from '../utils/logger';
 
+// SECURITY FIX: Strict regex validation for video URLs
+const YOUTUBE_REGEX = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/;
+const VIMEO_REGEX = /^https?:\/\/(www\.)?vimeo\.com\/\d+/;
+
+function isValidVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return true; // Allow null/undefined
+  return YOUTUBE_REGEX.test(url) || VIMEO_REGEX.test(url);
+}
+
 export class LessonController {
   static async createLesson(req: AuthRequest, res: Response) {
     try {
@@ -23,6 +32,14 @@ export class LessonController {
 
       if (!isInstructor && !isAdmin) {
         return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      // SECURITY FIX: Validate video URL
+      if (videoUrl && !isValidVideoUrl(videoUrl)) {
+        return res.status(400).json({
+          error: 'Invalid video URL',
+          details: 'Only YouTube and Vimeo URLs are allowed',
+        });
       }
 
       const lesson = await prisma.lesson.create({
@@ -95,6 +112,14 @@ export class LessonController {
 
       if (!isInstructor && !isAdmin) {
         return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      // SECURITY FIX: Validate video URL
+      if (videoUrl && !isValidVideoUrl(videoUrl)) {
+        return res.status(400).json({
+          error: 'Invalid video URL',
+          details: 'Only YouTube and Vimeo URLs are allowed',
+        });
       }
 
       const updated = await prisma.lesson.update({

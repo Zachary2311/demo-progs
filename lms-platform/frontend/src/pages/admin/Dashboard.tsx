@@ -47,7 +47,7 @@ const AdminDashboard: React.FC = () => {
           <div className="p-6">
             {dashboardData?.roleDistribution && dashboardData.roleDistribution.length > 0 ? (
               <div className="space-y-3">
-                {dashboardData.roleDistribution.map((item: any) => (
+                {dashboardData.roleDistribution.map((item: { role: string; count: number }) => (
                   <div key={item.role} className="flex items-center justify-between">
                     <span className="text-gray-700 capitalize">{item.role}</span>
                     <span className="font-semibold text-gray-900">{item.count}</span>
@@ -67,7 +67,7 @@ const AdminDashboard: React.FC = () => {
           <div className="p-6">
             {dashboardData?.topCourses && dashboardData.topCourses.length > 0 ? (
               <div className="space-y-3">
-                {dashboardData.topCourses.map((course: any) => (
+                {dashboardData.topCourses.map((course: { id: string; title: string; enrollments: number; instructor: string }) => (
                   <div key={course.id} className="border-l-4 border-primary-500 pl-4">
                     <h3 className="font-medium text-gray-900">{course.title}</h3>
                     <p className="text-sm text-gray-600">

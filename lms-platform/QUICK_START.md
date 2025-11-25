@@ -29,10 +29,29 @@ Edit `.env` and set:
 DISCORD_CLIENT_ID=paste_your_client_id_here
 DISCORD_CLIENT_SECRET=paste_your_client_secret_here
 
-# Generate strong secrets (or use these for testing):
-JWT_SECRET=your_super_secret_jwt_key_minimum_32_characters_long_string
-JWT_REFRESH_SECRET=your_super_secret_refresh_key_minimum_32_characters_long
+# SECURITY WARNING: NEVER use placeholder values in production!
+# Generate strong random secrets using the commands below:
+JWT_SECRET=<run command below to generate>
+JWT_REFRESH_SECRET=<run command below to generate>
 ```
+
+⚠️ **CRITICAL SECURITY WARNING**: Never use placeholder or example secrets in any environment!
+
+**Generate secure secrets:**
+```bash
+# Generate JWT_SECRET (64+ characters)
+node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+
+# Generate JWT_REFRESH_SECRET (64+ characters)
+node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+```
+
+**Minimum Requirements:**
+- JWT secrets must be at least 64 characters
+- Use cryptographically random strings
+- Never commit secrets to version control
+- Rotate secrets periodically
+- Use different secrets for development and production
 
 ## Step 3: Start the Platform (2 minutes)
 
@@ -56,11 +75,12 @@ docker-compose exec backend npm run seed
 docker network create lms-network
 
 # 2. Start MySQL
+# ⚠️ SECURITY: Replace passwords with secure values
 docker run -d --name lms-mysql --network lms-network \
-  -e MYSQL_ROOT_PASSWORD=rootpass \
+  -e MYSQL_ROOT_PASSWORD=<use_secure_password> \
   -e MYSQL_DATABASE=lms_db \
   -e MYSQL_USER=lmsuser \
-  -e MYSQL_PASSWORD=lmspass \
+  -e MYSQL_PASSWORD=<use_secure_password> \
   -p 3306:3306 mysql:8.0
 
 # Wait 30 seconds for MySQL to start
@@ -68,13 +88,14 @@ docker run -d --name lms-mysql --network lms-network \
 # 3. Start Backend
 cd backend
 docker build -t lms-backend .
+# ⚠️ SECURITY: Replace all placeholder values with actual secrets
 docker run -d --name lms-backend --network lms-network \
   -p 3001:3001 \
-  -e DATABASE_URL="mysql://lmsuser:lmspass@lms-mysql:3306/lms_db" \
-  -e DISCORD_CLIENT_ID="your_client_id" \
-  -e DISCORD_CLIENT_SECRET="your_client_secret" \
-  -e JWT_SECRET="your_jwt_secret" \
-  -e JWT_REFRESH_SECRET="your_refresh_secret" \
+  -e DATABASE_URL="mysql://lmsuser:<password>@lms-mysql:3306/lms_db" \
+  -e DISCORD_CLIENT_ID="<your_actual_client_id>" \
+  -e DISCORD_CLIENT_SECRET="<your_actual_client_secret>" \
+  -e JWT_SECRET="<generated_64_char_secret>" \
+  -e JWT_REFRESH_SECRET="<generated_64_char_secret>" \
   lms-backend
 
 # 4. Start Frontend

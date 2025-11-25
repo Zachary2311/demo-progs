@@ -30,9 +30,35 @@ export class AuthController {
       // Get Discord user info
       const discordUser = await DiscordService.getUser(tokenResponse.access_token);
 
-      // Find or create user
-      let user = await prisma.user.findUnique({
+      // CONCURRENCY FIX: Use upsert to prevent race conditions on concurrent logins
+      const user = await prisma.user.upsert({
         where: { discordId: discordUser.id },
+        update: {
+          username: discordUser.username,
+          discriminator: discordUser.discriminator,
+          email: discordUser.email,
+          avatar: discordUser.avatar,
+        },
+        create: {
+          discordId: discordUser.id,
+          username: discordUser.username,
+          discriminator: discordUser.discriminator,
+          email: discordUser.email,
+          avatar: discordUser.avatar,
+          roles: {
+            create: {
+              role: {
+                connectOrCreate: {
+                  where: { name: 'student' },
+                  create: {
+                    name: 'student',
+                    description: 'Student role',
+                  },
+                },
+              },
+            },
+          },
+        },
         include: {
           roles: {
             include: {
@@ -42,58 +68,7 @@ export class AuthController {
         },
       });
 
-      if (!user) {
-        // Create new user with student role by default
-        user = await prisma.user.create({
-          data: {
-            discordId: discordUser.id,
-            username: discordUser.username,
-            discriminator: discordUser.discriminator,
-            email: discordUser.email,
-            avatar: discordUser.avatar,
-            roles: {
-              create: {
-                role: {
-                  connectOrCreate: {
-                    where: { name: 'student' },
-                    create: {
-                      name: 'student',
-                      description: 'Student role',
-                    },
-                  },
-                },
-              },
-            },
-          },
-          include: {
-            roles: {
-              include: {
-                role: true,
-              },
-            },
-          },
-        });
-
-        logger.info(`New user created: ${user.username} (${user.id})`);
-      } else {
-        // Update user info
-        user = await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            username: discordUser.username,
-            discriminator: discordUser.discriminator,
-            email: discordUser.email,
-            avatar: discordUser.avatar,
-          },
-          include: {
-            roles: {
-              include: {
-                role: true,
-              },
-            },
-          },
-        });
-      }
+      logger.info(`User authenticated: ${user.username} (${user.id})`);
 
       // Generate JWT tokens
       const roles = user.roles.map(ur => ur.role.name);
@@ -109,9 +84,27 @@ export class AuthController {
         data: { refreshToken: tokens.refreshToken },
       });
 
-      // Redirect to frontend with token
+      // SECURITY FIX: Use secure HTTP-only cookies instead of URL parameters
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      res.redirect(`${frontendUrl}/auth/callback?token=${tokens.accessToken}&refresh=${tokens.refreshToken}`);
+
+      res.cookie('accessToken', tokens.accessToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+        maxAge: 15 * 60 * 1000, // 15 minutes
+        path: '/',
+      });
+
+      res.cookie('refreshToken', tokens.refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        path: '/',
+      });
+
+      // Redirect without tokens in URL
+      res.redirect(`${frontendUrl}/auth/callback`);
     } catch (error) {
       logger.error('Discord callback error:', error);
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';

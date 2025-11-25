@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { analyticsService } from '../../services/analytics.service';
 import { courseService } from '../../services/course.service';
+import { Course, Assignment } from '../../types';
 
 const StudentDashboard: React.FC = () => {
   const { data: dashboardData, isLoading } = useQuery({
@@ -82,7 +83,7 @@ const StudentDashboard: React.FC = () => {
         <div className="p-6">
           {enrolledCourses?.data && enrolledCourses.data.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {enrolledCourses.data.map((course: any) => (
+              {enrolledCourses.data.map((course: Course) => (
                 <Link
                   key={course.id}
                   to={`/student/courses/${course.id}`}
@@ -127,7 +128,7 @@ const StudentDashboard: React.FC = () => {
           </div>
           <div className="p-6">
             <div className="space-y-4">
-              {dashboardData.upcomingAssignments.map((assignment: any) => (
+              {dashboardData.upcomingAssignments.map((assignment: Assignment) => (
                 <div key={assignment.id} className="flex items-center justify-between border-l-4 border-yellow-500 pl-4 py-2">
                   <div>
                     <h3 className="font-medium text-gray-900">{assignment.title}</h3>

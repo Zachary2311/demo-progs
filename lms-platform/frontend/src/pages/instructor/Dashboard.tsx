@@ -48,7 +48,7 @@ const InstructorDashboard: React.FC = () => {
         <div className="p-6">
           {dashboardData?.courses && dashboardData.courses.length > 0 ? (
             <div className="space-y-4">
-              {dashboardData.courses.map((course: any) => (
+              {dashboardData.courses.map((course: { id: string; title: string; students: number; modules: number; isPublished: boolean }) => (
                 <div key={course.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                   <div className="flex items-center justify-between">
                     <div>

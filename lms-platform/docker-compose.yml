@@ -14,7 +14,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - lms_mysql_data:/var/lib/mysql
     networks:
       - lms_network
     healthcheck:
@@ -59,12 +59,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # DEVOPS FIX: Pass build arguments for Vite environment variables
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost:3001}
     container_name: lms_frontend
     restart: unless-stopped
     ports:
       - "80:80"
-    environment:
-      VITE_API_URL: ${API_URL:-http://localhost:3001}
     depends_on:
       - backend
     networks:
@@ -93,5 +94,6 @@ networks:
     driver: bridge
 
 volumes:
-  mysql_data:
+  # DEVOPS FIX: Standardized volume name
+  lms_mysql_data:
   backend_uploads:

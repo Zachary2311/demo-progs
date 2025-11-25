@@ -4,6 +4,14 @@ import { useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { courseService } from '../../services/course.service';
 
+// SECURITY FIX: Strict regex validation for video URLs
+const YOUTUBE_REGEX = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/;
+const VIMEO_REGEX = /^https?:\/\/(www\.)?vimeo\.com\/\d+/;
+
+function isYouTubeUrl(url: string): boolean {
+  return YOUTUBE_REGEX.test(url);
+}
+
 const LessonView: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
@@ -42,7 +50,7 @@ const LessonView: React.FC = () => {
         {lesson.videoUrl && (
           <div className="mb-6">
             <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden">
-              {lesson.videoUrl.includes('youtube.com') || lesson.videoUrl.includes('youtu.be') ? (
+              {isYouTubeUrl(lesson.videoUrl) ? (
                 <iframe
                   src={lesson.videoUrl.replace('watch?v=', 'embed/')}
                   className="w-full h-full"
