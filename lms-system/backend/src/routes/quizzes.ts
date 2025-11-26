@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Decimal } from '@prisma/client';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 
@@ -179,7 +179,12 @@ router.post('/:attemptId/submit', authMiddleware, async (req: Request, res: Resp
     const attempt = await prisma.quizAttempt.findUnique({
       where: { id: BigInt(attemptId) },
       include: {
-        quiz: { include: { questions: true } },
+        quiz: {
+          include: {
+            questions: true,
+            lesson: { include: { module: { include: { course: true } } } }
+          }
+        },
         answers: { include: { selectedOption: true, question: true } }
       }
     });
@@ -216,16 +221,19 @@ router.post('/:attemptId/submit', authMiddleware, async (req: Request, res: Resp
 
     // Create grade record
     if (passed) {
-      await prisma.grade.create({
-        data: {
-          quizAttemptId: BigInt(attemptId),
-          courseId: BigInt(1), // Should be fetched from context
-          studentId: attempt.studentId,
-          points: score,
-          percentage: percentage,
-          letterGrade: getLetterGrade(percentage)
-        }
-      });
+      const courseId = attempt.quiz.lesson?.module?.course?.id;
+      if (courseId) {
+        await prisma.grade.create({
+          data: {
+            quizAttemptId: BigInt(attemptId),
+            courseId: courseId,
+            studentId: attempt.studentId,
+            points: score,
+            percentage: percentage,
+            letterGrade: getLetterGrade(percentage)
+          }
+        });
+      }
     }
 
     res.json(updated);

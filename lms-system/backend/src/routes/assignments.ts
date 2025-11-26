@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Decimal } from '@prisma/client';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 

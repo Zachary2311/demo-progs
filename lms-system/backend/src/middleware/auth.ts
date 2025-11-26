@@ -21,10 +21,14 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
     throw new AppError(401, 'No authorization token provided');
   }
 
+  if (!process.env.JWT_SECRET) {
+    throw new AppError(500, 'JWT_SECRET environment variable is not configured');
+  }
+
   try {
     const decoded = jwt.verify(
       token,
-      process.env.JWT_SECRET || 'default-secret'
+      process.env.JWT_SECRET
     ) as any;
     req.user = decoded;
     next();

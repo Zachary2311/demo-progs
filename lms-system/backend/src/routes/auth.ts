@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { AppError } from '../middleware/errorHandler';
 import { authMiddleware } from '../middleware/auth';
@@ -27,20 +28,28 @@ const generateTokens = async (userId: bigint) => {
 
   const roles = user.roles.map(ur => ur.role.name);
 
+  if (!process.env.JWT_SECRET) {
+    throw new AppError(500, 'JWT_SECRET environment variable is not configured');
+  }
+
+  if (!process.env.JWT_REFRESH_SECRET) {
+    throw new AppError(500, 'JWT_REFRESH_SECRET environment variable is not configured');
+  }
+
   const accessToken = jwt.sign(
     { id: user.id.toString(), discordId: user.discordId, roles },
-    process.env.JWT_SECRET || 'default-secret',
+    process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRY || '15m' }
   );
 
   const refreshToken = jwt.sign(
     { id: user.id.toString(), discordId: user.discordId },
-    process.env.JWT_REFRESH_SECRET || 'default-secret',
+    process.env.JWT_REFRESH_SECRET,
     { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
   );
 
   // Store refresh token
-  const hashedToken = Buffer.from(refreshToken).toString('base64');
+  const hashedToken = await bcrypt.hash(refreshToken, 10);
   await prisma.session.create({
     data: {
       userId: userId,
@@ -114,9 +123,22 @@ router.post('/discord/callback', async (req: Request, res: Response, next: NextF
 
     const { accessToken, refreshToken } = await generateTokens(user.id);
 
+    // Set httpOnly secure cookies instead of sending tokens in response body
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
     res.json({
-      accessToken,
-      refreshToken,
       user: {
         id: user.id.toString(),
         discordId: user.discordId,
@@ -152,28 +174,38 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       throw new AppError(400, 'Refresh token required');
     }
 
+    if (!process.env.JWT_REFRESH_SECRET) {
+      throw new AppError(500, 'JWT_REFRESH_SECRET environment variable is not configured');
+    }
+
     let decoded: any;
     try {
       decoded = jwt.verify(
         refreshToken,
-        process.env.JWT_REFRESH_SECRET || 'default-secret'
+        process.env.JWT_REFRESH_SECRET
       );
     } catch (error) {
       throw new AppError(401, 'Invalid or expired refresh token');
     }
 
     // CRITICAL FIX: Verify session is valid and not revoked
-    const hashedToken = Buffer.from(refreshToken).toString('base64');
-    const session = await prisma.session.findFirst({
+    const sessions = await prisma.session.findMany({
       where: {
         userId: BigInt(decoded.id),
-        refreshTokenHash: hashedToken,
         revokedAt: null,
         expiresAt: {
           gt: new Date() // Check expiration
         }
       }
     });
+
+    let session = null;
+    for (const s of sessions) {
+      if (await bcrypt.compare(refreshToken, s.refreshTokenHash)) {
+        session = s;
+        break;
+      }
+    }
 
     if (!session) {
       throw new AppError(401, 'Session invalid or revoked');
@@ -198,7 +230,22 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       BigInt(decoded.id)
     );
 
-    res.json({ accessToken, refreshToken: newRefreshToken });
+    // Set httpOnly secure cookies instead of sending tokens in response body
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    });
+
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    res.json({ success: true });
   } catch (error) {
     next(error);
   }
