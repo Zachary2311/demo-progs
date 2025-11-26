@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Decimal } from '@prisma/client';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 
@@ -154,10 +154,15 @@ router.post('/:submissionId/grade', authMiddleware, requireRole(['instructor', '
 
       const submission = await prisma.submission.findUnique({
         where: { id: BigInt(submissionId) },
-        include: { assignment: true }
+        include: { assignment: { include: { course: true } } }
       });
 
       if (!submission) throw new AppError(404, 'Submission not found');
+
+      // Verify instructor owns the course
+      if (submission.assignment.course.instructorId !== BigInt(req.user.id) && !req.user.roles.includes('admin')) {
+        throw new AppError(403, 'Not authorized to grade submissions in this course');
+      }
 
       const percentage = (points / submission.assignment.totalPoints) * 100;
       const letterGrade = getLetterGrade(percentage);

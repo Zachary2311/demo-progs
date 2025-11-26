@@ -45,6 +45,18 @@ router.get('/course/:courseId/gradebook', authMiddleware, requireRole(['instruct
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { courseId } = req.params;
+      if (!req.user) throw new AppError(401, 'Not authenticated');
+
+      // Verify course ownership
+      const course = await prisma.course.findUnique({
+        where: { id: BigInt(courseId) }
+      });
+
+      if (!course) throw new AppError(404, 'Course not found');
+
+      if (course.instructorId !== BigInt(req.user.id) && !req.user.roles.includes('admin')) {
+        throw new AppError(403, 'Not authorized to view this gradebook');
+      }
 
       const enrollments = await prisma.courseEnrollment.findMany({
         where: { courseId: BigInt(courseId) },
@@ -138,11 +150,37 @@ router.get('/student/:studentId', authMiddleware, requireRole(['admin']),
   }
 );
 
+// CSV injection prevention helper
+const escapeCSV = (value: string | number): string => {
+  const stringValue = String(value);
+  // Check for formula injection patterns
+  if (stringValue.match(/^[=+\-@]/)) {
+    return `'${stringValue}`;
+  }
+  // Quote fields containing commas, quotes, or newlines
+  if (stringValue.match(/[,"\n]/)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+
 // Export gradebook as CSV
 router.get('/:courseId/export-csv', authMiddleware, requireRole(['instructor', 'admin']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { courseId } = req.params;
+      if (!req.user) throw new AppError(401, 'Not authenticated');
+
+      // Verify course ownership
+      const course = await prisma.course.findUnique({
+        where: { id: BigInt(courseId) }
+      });
+
+      if (!course) throw new AppError(404, 'Course not found');
+
+      if (course.instructorId !== BigInt(req.user.id) && !req.user.roles.includes('admin')) {
+        throw new AppError(403, 'Not authorized to export this gradebook');
+      }
 
       const enrollments = await prisma.courseEnrollment.findMany({
         where: { courseId: BigInt(courseId) },
@@ -164,7 +202,7 @@ router.get('/:courseId/export-csv', authMiddleware, requireRole(['instructor', '
           ? grades.reduce((sum, g) => sum + (g.percentage?.toNumber() || 0), 0) / grades.length
           : 0;
 
-        csv += `${enrollment.studentId},${enrollment.student.username},${enrollment.student.email},${totalPoints},${avgPercentage.toFixed(2)},${getLetterGrade(avgPercentage)}\n`;
+        csv += `${escapeCSV(enrollment.studentId.toString())},${escapeCSV(enrollment.student.username)},${escapeCSV(enrollment.student.email)},${escapeCSV(totalPoints)},${escapeCSV(avgPercentage.toFixed(2))},${escapeCSV(getLetterGrade(avgPercentage))}\n`;
       }
 
       res.set({

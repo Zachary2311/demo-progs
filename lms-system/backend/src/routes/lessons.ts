@@ -63,10 +63,24 @@ router.put('/:id', authMiddleware, requireRole(['instructor', 'admin']),
     try {
       const { id } = req.params;
       const { title, content, contentType, isPublished, durationMinutes } = req.body;
+      if (!req.user) throw new AppError(401, 'Not authenticated');
+
+      // Verify lesson exists and user owns the course
+      const lesson = await prisma.lesson.findUnique({
+        where: { id: BigInt(id) },
+        include: { module: { include: { course: true } } }
+      });
+
+      if (!lesson) throw new AppError(404, 'Lesson not found');
+
+      // Check authorization: must be instructor of the course or admin
+      if (lesson.module.course.instructorId !== BigInt(req.user.id) && !req.user.roles.includes('admin')) {
+        throw new AppError(403, 'Not authorized to update this lesson');
+      }
 
       const sanitizedContent = content !== undefined ? (content ? sanitizeContent(content) : null) : undefined;
 
-      const lesson = await prisma.lesson.update({
+      const updated = await prisma.lesson.update({
         where: { id: BigInt(id) },
         data: {
           ...(title && { title }),
@@ -77,7 +91,7 @@ router.put('/:id', authMiddleware, requireRole(['instructor', 'admin']),
         }
       });
 
-      res.json(lesson);
+      res.json(updated);
     } catch (error) {
       next(error);
     }
@@ -89,6 +103,26 @@ router.post('/:id/complete', authMiddleware, async (req: Request, res: Response,
   try {
     const { id } = req.params;
     if (!req.user) throw new AppError(401, 'Not authenticated');
+
+    // Verify lesson exists and student is enrolled in the course
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: BigInt(id) },
+      include: { module: { include: { course: true } } }
+    });
+
+    if (!lesson) throw new AppError(404, 'Lesson not found');
+
+    // Check if student is enrolled in the course
+    const enrollment = await prisma.courseEnrollment.findFirst({
+      where: {
+        courseId: lesson.module.course.id,
+        studentId: BigInt(req.user.id)
+      }
+    });
+
+    if (!enrollment) {
+      throw new AppError(403, 'Not enrolled in this course');
+    }
 
     const completion = await prisma.lessonCompletion.upsert({
       where: {
