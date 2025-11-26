@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Button, Card, CircularProgress, Typography } from '@mui/material';
 import { useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 import { apiClient } from '../utils/api';
 
 const LessonPage: React.FC = () => {
@@ -43,10 +44,9 @@ const LessonPage: React.FC = () => {
       </Typography>
 
       <Card sx={{ p: 4, mb: 3 }}>
-        <div
-          dangerouslySetInnerHTML={{ __html: lesson.content }}
-          style={{ marginBottom: 20 }}
-        />
+        <Box sx={{ marginBottom: 20 }}>
+          <ReactMarkdown>{lesson.content || ''}</ReactMarkdown>
+        </Box>
         <Button variant="contained" color="success" onClick={handleCompleteLesson}>
           Mark as Complete
         </Button>

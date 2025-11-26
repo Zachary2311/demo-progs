@@ -40,7 +40,9 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
     next();
   } catch (error) {
     logger.error('Rate limiting error:', error);
-    // On error, allow request to proceed but log it
-    next();
+    // Fail closed: reject request on rate limiter errors
+    return res.status(503).json({
+      error: 'Service temporarily unavailable'
+    });
   }
 };

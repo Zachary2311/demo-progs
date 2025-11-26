@@ -11,9 +11,11 @@ export class RedisClient {
   private redis: any = null;
   private inMemoryStore: RateLimitStore = {};
   private useRedis: boolean = false;
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     this.initialize();
+    this.startCleanupInterval();
   }
 
   private initialize() {
@@ -29,6 +31,24 @@ export class RedisClient {
       console.log('Redis initialization failed, using in-memory storage');
       this.useRedis = false;
     }
+  }
+
+  private startCleanupInterval() {
+    // Clean up expired entries every hour
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      let deletedCount = 0;
+      for (const [key, entry] of Object.entries(this.inMemoryStore)) {
+        // Delete entries that expired more than 24 hours ago
+        if (now > entry.resetTime + 86400000) {
+          delete this.inMemoryStore[key];
+          deletedCount++;
+        }
+      }
+      if (deletedCount > 0) {
+        console.log(`Cleaned up ${deletedCount} expired rate limit entries`);
+      }
+    }, 3600000); // Run every hour
   }
 
   async incrementCounter(key: string, windowMs: number): Promise<number> {

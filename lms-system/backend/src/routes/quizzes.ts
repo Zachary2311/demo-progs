@@ -126,10 +126,25 @@ router.post('/:quizId/attempts', authMiddleware, async (req: Request, res: Respo
     if (!req.user) throw new AppError(401, 'Not authenticated');
 
     const quiz = await prisma.quiz.findUnique({
-      where: { id: BigInt(quizId) }
+      where: { id: BigInt(quizId) },
+      include: { lesson: { include: { module: { include: { course: true } } } } }
     });
 
     if (!quiz) throw new AppError(404, 'Quiz not found');
+
+    // Verify student is enrolled in the course
+    if (quiz.lesson) {
+      const enrollment = await prisma.courseEnrollment.findFirst({
+        where: {
+          courseId: quiz.lesson.module.course.id,
+          studentId: BigInt(req.user.id)
+        }
+      });
+
+      if (!enrollment) {
+        throw new AppError(403, 'Not enrolled in this course');
+      }
+    }
 
     const attempt = await prisma.quizAttempt.create({
       data: {
@@ -154,6 +169,17 @@ router.post('/:attemptId/answers', authMiddleware, async (req: Request, res: Res
     if (!req.user) throw new AppError(401, 'Not authenticated');
 
     if (!questionId) throw new AppError(400, 'Question ID required');
+
+    // Verify the attempt belongs to the authenticated user
+    const attempt = await prisma.quizAttempt.findUnique({
+      where: { id: BigInt(attemptId) }
+    });
+
+    if (!attempt) throw new AppError(404, 'Attempt not found');
+
+    if (attempt.studentId !== BigInt(req.user.id)) {
+      throw new AppError(403, 'Not authorized to submit answers for this attempt');
+    }
 
     const answer = await prisma.quizAnswer.create({
       data: {
