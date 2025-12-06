@@ -1,0 +1,11 @@
+name = "edge-voice-studio"
+main = "src/index.js"
+compatibility_date = "2025-12-06"
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "voice_app"
+database_id = "f8e03f4e-f299-4847-abf9-6faaba497896"
