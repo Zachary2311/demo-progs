@@ -1,3 +1,6 @@
+const COOKIE_NAME = "session_id";
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -7,6 +10,20 @@ export default {
       return new Response(getFrontendHtml(), {
         headers: { "Content-Type": "text/html; charset=UTF-8" },
       });
+    }
+
+    // Auth
+    if (pathname === "/api/signup" && request.method === "POST") {
+      return handleSignup(request, env);
+    }
+    if (pathname === "/api/login" && request.method === "POST") {
+      return handleLogin(request, env);
+    }
+    if (pathname === "/api/logout" && request.method === "POST") {
+      return handleLogout(request, env);
+    }
+    if (pathname === "/api/me" && request.method === "GET") {
+      return handleMe(request, env);
     }
 
     // Speech-to-Text
@@ -46,6 +63,203 @@ function json(obj, status = 200, headers = {}) {
   });
 }
 
+function unauthorized() {
+  return json({ ok: false, error: "Not authenticated" }, 401);
+}
+
+function parseCookies(request) {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const cookies = {};
+  cookieHeader.split(";").forEach((pair) => {
+    const [key, ...rest] = pair.trim().split("=");
+    if (!key) return;
+    cookies[key] = decodeURIComponent(rest.join("="));
+  });
+  return cookies;
+}
+
+function makeCookie(name, value, { maxAge } = {}) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (maxAge !== undefined) {
+    parts.push(`Max-Age=${maxAge}`);
+  }
+  return parts.join("; ");
+}
+
+function randomId(size = 16) {
+  const arr = new Uint8Array(size);
+  crypto.getRandomValues(arr);
+  return [...arr].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashPassword(password) {
+  const data = new TextEncoder().encode(password);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(hash)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function createSession(env, userId) {
+  const sessionId = randomId(16);
+  const now = Date.now();
+  const expiresAt = now + COOKIE_MAX_AGE * 1000;
+
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+  )
+    .bind(sessionId, userId, now, expiresAt)
+    .run();
+
+  return { sessionId, expiresAt };
+}
+
+async function getSessionUser(env, request) {
+  const cookies = parseCookies(request);
+  const sessionId = cookies[COOKIE_NAME];
+  if (!sessionId) return null;
+
+  const now = Date.now();
+  const { results } = await env.DB.prepare(
+    `SELECT users.id as id, users.email as email, sessions.id as session_id
+     FROM sessions
+     JOIN users ON users.id = sessions.user_id
+     WHERE sessions.id = ? AND sessions.expires_at > ?`,
+  )
+    .bind(sessionId, now)
+    .all();
+
+  if (!results || !results.length) return null;
+
+  const row = results[0];
+  return { id: row.id, email: row.email, sessionId: row.session_id };
+}
+
+/* ---------- Auth handlers ---------- */
+
+async function handleSignup(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  if (!email || !password || password.length < 6) {
+    return json(
+      {
+        ok: false,
+        error: "Email and password (min 6 chars) are required.",
+      },
+      400,
+    );
+  }
+
+  const passwordHash = await hashPassword(password);
+  const now = Date.now();
+
+  let userId;
+  try {
+    const result = await env.DB.prepare(
+      "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+    )
+      .bind(email, passwordHash, now)
+      .run();
+    userId = result.meta.last_row_id;
+  } catch (err) {
+    if (String(err).includes("UNIQUE")) {
+      return json({ ok: false, error: "Email already registered." }, 409);
+    }
+    console.error("Signup error:", err);
+    return json({ ok: false, error: "Could not create account." }, 500);
+  }
+
+  const { sessionId } = await createSession(env, userId);
+  const cookie = makeCookie(COOKIE_NAME, sessionId, {
+    maxAge: COOKIE_MAX_AGE,
+  });
+
+  return json(
+    { ok: true, user: { id: userId, email } },
+    200,
+    { "Set-Cookie": cookie },
+  );
+}
+
+async function handleLogin(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  if (!email || !password) {
+    return json(
+      { ok: false, error: "Email and password are required." },
+      400,
+    );
+  }
+
+  const { results } = await env.DB.prepare(
+    "SELECT id, password_hash FROM users WHERE email = ?",
+  )
+    .bind(email)
+    .all();
+
+  if (!results || !results.length) {
+    return json({ ok: false, error: "Invalid email or password." }, 401);
+  }
+
+  const user = results[0];
+  const hash = await hashPassword(password);
+  if (hash !== user.password_hash) {
+    return json({ ok: false, error: "Invalid email or password." }, 401);
+  }
+
+  const { sessionId } = await createSession(env, user.id);
+  const cookie = makeCookie(COOKIE_NAME, sessionId, {
+    maxAge: COOKIE_MAX_AGE,
+  });
+
+  return json(
+    { ok: true, user: { id: user.id, email } },
+    200,
+    { "Set-Cookie": cookie },
+  );
+}
+
+async function handleLogout(request, env) {
+  const cookies = parseCookies(request);
+  const sessionId = cookies[COOKIE_NAME];
+
+  if (sessionId) {
+    await env.DB.prepare("DELETE FROM sessions WHERE id = ?")
+      .bind(sessionId)
+      .run();
+  }
+
+  const cookie = makeCookie(COOKIE_NAME, "", { maxAge: 0 });
+  return json({ ok: true }, 200, { "Set-Cookie": cookie });
+}
+
+async function handleMe(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return json({ ok: false, user: null }, 200);
+  return json({ ok: true, user: { id: user.id, email: user.email } }, 200);
+}
+
 /* ---------- Speech-to-Text handler (Whisper) ---------- */
 
 async function handleTranscription(request, env) {
@@ -79,10 +293,11 @@ async function handleTranscription(request, env) {
     const now = Date.now();
     await env.DB.prepare(
       `INSERT INTO transcriptions
-       (filename, transcript_preview, word_count, model, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+       (user_id, filename, transcript_preview, word_count, model, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
       .bind(
+        user.id,
         file.name || null,
         text.slice(0, 500),
         wc,
@@ -116,6 +331,9 @@ async function handleTranscription(request, env) {
 /* ---------- Text-to-Speech handler (Deepgram Aura-2) ---------- */
 
 async function handleTTS(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
   let body;
   try {
     body = await request.json();
@@ -135,10 +353,11 @@ async function handleTTS(request, env) {
 
   await env.DB.prepare(
     `INSERT INTO tts_history
-     (text_preview, char_count, speaker, model, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
+     (user_id, text_preview, char_count, speaker, model, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   )
     .bind(
+      user.id,
       text.slice(0, 200),
       charCount,
       speaker,
@@ -177,24 +396,34 @@ async function handleTTS(request, env) {
 /* ---------- History handlers ---------- */
 
 async function handleTranscriptionHistory(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
   const { results } = await env.DB.prepare(
     `SELECT id, filename, transcript_preview, word_count, model, created_at
      FROM transcriptions
+     WHERE user_id = ?
      ORDER BY created_at DESC
      LIMIT 20`,
   )
+    .bind(user.id)
     .all();
 
   return json({ ok: true, items: results || [] });
 }
 
 async function handleTTSHistory(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
   const { results } = await env.DB.prepare(
     `SELECT id, text_preview, char_count, speaker, model, created_at
      FROM tts_history
+     WHERE user_id = ?
      ORDER BY created_at DESC
      LIMIT 20`,
   )
+    .bind(user.id)
     .all();
 
   return json({ ok: true, items: results || [] });
@@ -617,6 +846,7 @@ function getFrontendHtml() {
       display: none;
     }
 
+    /* Auth section */
     .top-bar {
       display: flex;
       justify-content: space-between;
@@ -634,6 +864,38 @@ function getFrontendHtml() {
       margin: 2px 0 0;
       font-size: 0.8rem;
       color: var(--muted);
+    }
+    .auth {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+    }
+    .auth-status {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .auth-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    .auth-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .auth-form input {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148,163,184,0.6);
+      background: rgba(15,23,42,0.95);
+      color: var(--text);
+      font-size: 0.8rem;
+      min-width: 150px;
     }
 
     /* TTS layout */
@@ -749,13 +1011,32 @@ function getFrontendHtml() {
 
   </style>
 </head>
+<body>
   <main class="app-shell">
-    <!-- Top: brand -->
+    <!-- Top: brand + account -->
     <section class="card">
       <div class="card-inner top-bar">
         <div class="brand-title">
           <h1>Edge Voice Studio</h1>
           <p>Transcribe with Whisper, speak with Deepgram Aura 2 – all at the edge.</p>
+        </div>
+        <div class="auth">
+          <div id="auth-logged" style="display:none">
+            <div class="auth-status">
+              Signed in as <strong id="auth-email-label"></strong>
+            </div>
+            <div class="auth-row">
+              <button id="logout-btn" type="button" class="btn btn-ghost btn-small">Log out</button>
+            </div>
+          </div>
+          <form id="auth-form" class="auth-form">
+            <div id="auth-anon">
+              <input id="auth-email" type="email" placeholder="you@example.com" required />
+              <input id="auth-password" type="password" placeholder="Password (min 6 chars)" required />
+              <button id="signup-btn" type="button" class="btn btn-ghost btn-small">Sign up</button>
+              <button id="login-btn" type="button" class="btn btn-small">Log in</button>
+            </div>
+          </form>
         </div>
       </div>
     </section>
@@ -773,7 +1054,7 @@ function getFrontendHtml() {
                   @cf/openai/whisper
                 </span>
               </h1>
-              <p>Drop an audio file, let Whisper handle transcription – history automatically saved.</p>
+              <p>Drop an audio file, let Whisper handle transcription – history saved to your account.</p>
             </div>
           </div>
 
@@ -806,7 +1087,7 @@ function getFrontendHtml() {
             <div class="hint-row">
               <div class="hint">
                 <span class="hint-dot"></span>
-                <span>Transcriptions are automatically saved to history.</span>
+                <span>Sign in above to save transcriptions per account.</span>
               </div>
               <div class="hint">
                 <span>We call <code>env.AI.run("@cf/openai/whisper")</code> from this Worker.</span>
@@ -905,7 +1186,7 @@ function getFrontendHtml() {
           </div>
           <div class="tts-output">
             <audio id="tts-audio" controls style="width:100%;"></audio>
-            <div id="tts-status" class="hint">Ready – audio will be saved to history.</div>
+            <div id="tts-status" class="hint">Ready – sign in to keep a history of your audio.</div>
           </div>
         </div>
       </div>
@@ -916,7 +1197,7 @@ function getFrontendHtml() {
       <div class="card-inner">
         <div class="history-header">
           <h2>History</h2>
-          <span id="history-hint">Recent transcriptions and audio.</span>
+          <span id="history-hint">Sign in to see your recent transcriptions and audio.</span>
         </div>
         <div class="history-grid">
           <div>
@@ -952,6 +1233,16 @@ function getFrontendHtml() {
     const vttBlock = document.getElementById("vtt-block");
     const vttText = document.getElementById("vtt-text");
 
+    const authForm = document.getElementById("auth-form");
+    const authAnon = document.getElementById("auth-anon");
+    const authLogged = document.getElementById("auth-logged");
+    const authEmailInput = document.getElementById("auth-email");
+    const authPasswordInput = document.getElementById("auth-password");
+    const authEmailLabel = document.getElementById("auth-email-label");
+    const signupBtn = document.getElementById("signup-btn");
+    const loginBtn = document.getElementById("login-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+
     const ttsText = document.getElementById("tts-text");
     const ttsSpeaker = document.getElementById("tts-speaker");
     const ttsBtn = document.getElementById("tts-btn");
@@ -962,6 +1253,7 @@ function getFrontendHtml() {
     const historyTranscriptions = document.getElementById("history-transcriptions");
     const historyTts = document.getElementById("history-tts");
 
+    let currentUser = null;
     let lastTtsUrl = null;
 
     function humanFileSize(bytes) {
@@ -1004,8 +1296,88 @@ function getFrontendHtml() {
       return d.toLocaleString();
     }
 
-    // Auto-load history on page load
-    async function refreshHistory() {
+    function setAuthState(user) {
+      currentUser = user;
+      if (user) {
+        authLogged.style.display = "flex";
+        authAnon.style.display = "none";
+        authEmailLabel.textContent = user.email;
+        historyHint.textContent = "Showing your recent transcriptions and audio.";
+        refreshHistory();
+      } else {
+        authLogged.style.display = "none";
+        authAnon.style.display = "flex";
+        authEmailLabel.textContent = "";
+        historyHint.textContent = "Sign in to see your recent transcriptions and audio.";
+        clearHistory();
+      }
+    }
+
+    async function refreshSession() {
+      try {
+        const res = await fetch("/api/me");
+        if (!res.ok) {
+          setAuthState(null);
+          return;
+        }
+        const data = await res.json();
+        if (data && data.ok && data.user) {
+          setAuthState(data.user);
+        } else {
+          setAuthState(null);
+        }
+      } catch (err) {
+        console.error("Session check failed:", err);
+        setAuthState(null);
+      }
+    }
+
+    async function authAction(mode) {
+      clearError();
+      const email = authEmailInput.value.trim();
+      const password = authPasswordInput.value;
+
+      if (!email || !password) {
+        showError("Email and password are required.");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/" + (mode === "signup" ? "signup" : "login"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showError(data.error || "Authentication failed.");
+          return;
+        }
+        authPasswordInput.value = "";
+        setAuthState(data.user);
+      } catch (err) {
+        console.error("Auth error:", err);
+        showError("Unable to reach auth endpoint.");
+      }
+    }
+
+    async function handleLogout() {
+      clearError();
+      try {
+        await fetch("/api/logout", { method: "POST" });
+      } catch (err) {
+        console.error("Logout error:", err);
+      } finally {
+        setAuthState(null);
+      }
+    }
+
+    authForm.addEventListener("submit", (e) => e.preventDefault());
+    signupBtn.addEventListener("click", () => authAction("signup"));
+    loginBtn.addEventListener("click", () => authAction("login"));
+    logoutBtn.addEventListener("click", handleLogout);
+
+    browseBtn.addEventListener("click", () => fileInput.click());
 
     fileInput.addEventListener("change", () => {
       const file = fileInput.files[0];
@@ -1072,6 +1444,11 @@ function getFrontendHtml() {
         const isJson = response.headers.get("content-type")?.includes("application/json");
         const data = isJson ? await response.json() : null;
 
+        if (response.status === 401) {
+          showError("Please sign in before transcribing audio.");
+          return;
+        }
+
         if (!response.ok || !data || data.ok === false) {
           const errMsg = (data && (data.error || data.message)) || "Transcription failed.";
           showError(errMsg);
@@ -1094,7 +1471,9 @@ function getFrontendHtml() {
         lastRun.textContent = now.toLocaleTimeString();
         statusText.textContent = "Transcription complete.";
 
-        refreshHistory();
+        if (currentUser) {
+          refreshHistory();
+        }
       } catch (err) {
         console.error(err);
         showError("Unexpected error while calling the Worker. Check the console/logs.");
@@ -1105,6 +1484,10 @@ function getFrontendHtml() {
 
     ttsBtn.addEventListener("click", async () => {
       clearError();
+      if (!currentUser) {
+        showError("Please sign in before generating audio.");
+        return;
+      }
 
       const text = ttsText.value.trim();
       if (!text) {
@@ -1125,6 +1508,10 @@ function getFrontendHtml() {
           }),
         });
 
+        if (res.status === 401) {
+          showError("Please sign in before generating audio.");
+          return;
+        }
         if (!res.ok) {
           showError("TTS request failed.");
           return;
@@ -1142,7 +1529,9 @@ function getFrontendHtml() {
         } catch (_) {
         }
         ttsStatus.textContent = "Audio generated – hit play or download from the player.";
-        refreshHistory();
+        if (currentUser) {
+          refreshHistory();
+        }
       } catch (err) {
         console.error("TTS error:", err);
         showError("Unexpected error while calling TTS.");
@@ -1150,6 +1539,11 @@ function getFrontendHtml() {
         ttsBtn.disabled = false;
       }
     });
+
+    function clearHistory() {
+      historyTranscriptions.innerHTML = "";
+      historyTts.innerHTML = "";
+    }
 
     function renderHistoryList(listEl, items, type) {
       listEl.innerHTML = "";
@@ -1198,11 +1592,17 @@ function getFrontendHtml() {
     }
 
     async function refreshHistory() {
+      if (!currentUser) return;
       try {
         const [sttRes, ttsRes] = await Promise.all([
           fetch("/api/history/transcriptions"),
           fetch("/api/history/tts"),
         ]);
+
+        if (sttRes.status === 401 || ttsRes.status === 401) {
+          setAuthState(null);
+          return;
+        }
 
         const sttData = await sttRes.json();
         const ttsData = await ttsRes.json();
@@ -1218,8 +1618,7 @@ function getFrontendHtml() {
       }
     }
 
-    // Load history on page load
-    refreshHistory();
+    refreshSession();
   </script>
 </body>
 </html>`;
