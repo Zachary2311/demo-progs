@@ -281,7 +281,8 @@ async function handleTranscription(request, env) {
 
     const arrayBuffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
-    const input = { audio: [...uint8] };
+    // Pass Uint8Array directly
+    const input = { audio: uint8 };
 
     const aiResponse = await env.AI.run("@cf/openai/whisper", input);
 
@@ -445,7 +446,7 @@ function getFrontendHtml() {
       --card-bg: rgba(15, 23, 42, 0.9);
       --accent: #38bdf8;
       --accent-soft: rgba(56, 189, 248, 0.15);
-      --border-subtle: rgba(148, 163, 184, 0.35);
+      --border-subtle: rgba(148,163,184,0.35);
       --text: #e5e7eb;
       --muted: #9ca3af;
       --radius-xl: 24px;
