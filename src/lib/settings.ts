@@ -77,15 +77,16 @@ export async function getAppSetting<K extends keyof AppSettings>(
   }
 
   // Parse based on key type
-  if (key === 'enable_image_generation' || key === 'enable_deep_thinking') {
-    return (result.value === 'true') as AppSettings[K];
+  switch (key) {
+    case 'enable_image_generation':
+    case 'enable_deep_thinking':
+      return (result.value === 'true') as AppSettings[K];
+    case 'model_temperature':
+      return parseFloat(result.value) as AppSettings[K];
+    case 'max_tokens':
+    case 'rate_limit_per_day':
+      return parseInt(result.value, 10) as AppSettings[K];
+    default:
+      throw new Error(`Unsupported settings key: ${key}`);
   }
-  if (key === 'model_temperature') {
-    return parseFloat(result.value) as AppSettings[K];
-  }
-  if (key === 'max_tokens' || key === 'rate_limit_per_day') {
-    return parseInt(result.value, 10) as AppSettings[K];
-  }
-
-  return result.value as AppSettings[K];
 }

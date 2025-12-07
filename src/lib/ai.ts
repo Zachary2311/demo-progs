@@ -123,7 +123,7 @@ export class AIClient {
   async generateImage(options: ImageGenerationOptions): Promise<ArrayBuffer> {
     const { prompt, width = 1024, height = 1024 } = options;
 
-    const response = await this.ai.run(AI_MODELS.IMAGE, {
+    const response: any = await this.ai.run(AI_MODELS.IMAGE, {
       prompt,
       width,
       height,
@@ -162,7 +162,7 @@ export class AIClient {
   async textToSpeech(options: TTSOptions): Promise<ArrayBuffer> {
     const { text } = options;
 
-    const response = await this.ai.run(AI_MODELS.TTS, {
+    const response: any = await this.ai.run(AI_MODELS.TTS, {
       text,
     });
 

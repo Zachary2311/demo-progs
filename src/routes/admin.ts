@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { Env, AuthPayload, User, FileRecord } from '../types';
+import type { Env, AuthPayload, User } from '../types';
 import { getAppSettings, updateAppSettings } from '../lib/settings';
 import { listAllFiles, getFileCount } from '../lib/storage';
 import { resetRateLimit } from '../lib/rateLimit';

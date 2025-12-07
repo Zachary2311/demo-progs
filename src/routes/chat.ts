@@ -231,9 +231,8 @@ chatRoutes.post('/image', async (c) => {
     return c.json({ success: false, error: 'Image generation is currently disabled' }, 400);
   }
 
-  const { prompt, conversationId } = await c.req.json<{
+  const { prompt } = await c.req.json<{
     prompt: string;
-    conversationId?: string;
   }>();
 
   if (!prompt) {
@@ -280,9 +279,8 @@ chatRoutes.post('/image', async (c) => {
 chatRoutes.post('/tts', async (c) => {
   const user = c.get('user');
 
-  const { text, messageId } = await c.req.json<{
+  const { text } = await c.req.json<{
     text: string;
-    messageId?: string;
   }>();
 
   if (!text) {

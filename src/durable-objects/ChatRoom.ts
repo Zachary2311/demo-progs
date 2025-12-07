@@ -16,13 +16,12 @@ interface Session {
 // Durable Object for WebSocket chat rooms
 export class ChatRoom {
   private state: DurableObjectState;
-  private env: Env;
   private sessions: Map<string, Session>;
   private lastTimestamp: number;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
-    this.env = env;
+    void env;
     this.sessions = new Map();
     this.lastTimestamp = 0;
   }

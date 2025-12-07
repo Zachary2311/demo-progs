@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { Env, AuthPayload, FileRecord } from '../types';
+import type { Env, AuthPayload } from '../types';
 import { uploadFile, getFile, deleteFile, listUserFiles } from '../lib/storage';
 
 export const fileRoutes = new Hono<{ Bindings: Env; Variables: { user: AuthPayload } }>();
