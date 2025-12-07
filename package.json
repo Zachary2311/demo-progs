@@ -20,6 +20,7 @@
     "migrate": "wrangler d1 execute cf-chat-db --file=./migrations/0001_init.sql"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "bcryptjs": "^2.4.3",
     "hono": "^4.0.0",
     "jose": "^5.2.0",
