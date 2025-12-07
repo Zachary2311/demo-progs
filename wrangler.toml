@@ -11,8 +11,16 @@ database_name = "voice_app"
 database_id = "f8e03f4e-f299-4847-abf9-6faaba497896"
 
 [observability]
-[observability.logs]
 enabled = false
 head_sampling_rate = 1
-invocation_logs = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
 persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
