@@ -7,13 +7,13 @@ compatibility_flags = ["nodejs_compat"]
 bucket = "./dist"
 
 [vars]
-JWT_SECRET = ""
-SMTP_HOST = ""
-SMTP_PORT = ""
-SMTP_USER = ""
-SMTP_PASS = ""
-SMTP_FROM = ""
-APP_URL = ""
+JWT_SECRET = "A6u4cNwq9xW3yP0rGmT8VbJsKfQ2ZdEhL1tR5oU7pYcI0nH3sF"
+SMTP_HOST = "email-smtp.us-east-1.amazonaws.com"
+SMTP_PORT = "25"
+SMTP_USER = "AKIA2HZN54SYRD7HIEEL"
+SMTP_PASS = "BKiBIXdwgUYyb7OoOF7UcVBvI99WLYeYR61bxsI2cyol"
+SMTP_FROM = "noreply@serverhelper.xyz"
+APP_URL = "cf-chat.serverhelper.workers.dev"
 
 [[d1_databases]]
 binding = "DB"
