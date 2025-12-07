@@ -9,3 +9,14 @@ binding = "AI"
 binding = "DB"
 database_name = "voice_app"
 database_id = "f8e03f4e-f299-4847-abf9-6faaba497896"
+
+{
+  "observability": {
+    "logs": {
+      "enabled": false,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    }
+  }
+}
