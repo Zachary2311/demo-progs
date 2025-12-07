@@ -281,8 +281,7 @@ async function handleTranscription(request, env) {
 
     const arrayBuffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
-    // Pass Uint8Array directly
-    const input = { audio: uint8 };
+    const input = { audio: [...uint8] };
 
     const aiResponse = await env.AI.run("@cf/openai/whisper", input);
 
