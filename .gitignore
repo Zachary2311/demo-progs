@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Wrangler
+.wrangler/
+
+# Coverage
+coverage/
+
+# Test artifacts
+*.test.log
+
+# Cache
+.cache/
+.turbo/
+
+# TypeScript
+*.tsbuildinfo

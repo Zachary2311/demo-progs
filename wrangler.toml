@@ -1,0 +1,47 @@
+name = "cf-chat"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[site]
+bucket = "./dist"
+
+[vars]
+JWT_SECRET = ""
+SMTP_HOST = ""
+SMTP_PORT = ""
+SMTP_USER = ""
+SMTP_PASS = ""
+SMTP_FROM = ""
+APP_URL = ""
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cf-chat-db"
+database_id = "86dbb872-2cfa-4087-8b1d-5fc06f06e919"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "cf-chat-files"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "f088d2b8d83c4353a85ba95dea6abb0e"
+
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatRoom"]
+
+[build]
+command = "npm run build:web"
+
+[dev]
+port = 8787
+local_protocol = "http"
