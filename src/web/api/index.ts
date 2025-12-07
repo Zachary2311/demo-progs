@@ -30,13 +30,13 @@ async function fetchApi<T>(
       credentials: 'include',
     });
 
-    const data = await response.json();
+    const data = await response.json() as ApiResponse<T>;
 
     if (!response.ok) {
       return { success: false, error: data.error || 'Request failed' };
     }
 
-    return data as ApiResponse<T>;
+    return data;
   } catch (error) {
     console.error('API error:', error);
     return { success: false, error: 'Network error' };
@@ -89,7 +89,7 @@ export const chatApi = {
   getConversation: (id: string) =>
     fetchApi<{
       conversation: { id: string; title: string; created_at: number; updated_at: number };
-      messages: Array<{ id: string; role: string; content: string; model: string; created_at: number }>;
+      messages: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; model?: string; created_at: number }>;
     }>(`/chat/conversations/${id}`),
 
   createConversation: (title?: string) =>
@@ -124,7 +124,7 @@ export const chatApi = {
       });
 
       if (!response.ok) {
-        const data = await response.json();
+        const data = await response.json() as { error?: string };
         return { success: false, error: data.error || 'Failed to send message' };
       }
 
@@ -135,6 +135,7 @@ export const chatApi = {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
+      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;

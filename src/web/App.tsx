@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect } from 'react';
-import { useAuthStore, useChatStore, useToastStore } from './store';
+import { useAuthStore, useChatStore } from './store';
 import { authApi, chatApi } from './api';
 import Layout from './components/Layout';
 import Chat from './pages/Chat';
@@ -26,9 +26,8 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const { isAuthenticated, setAuth, clearAuth } = useAuthStore();
+  const { isAuthenticated, clearAuth } = useAuthStore();
   const { setSettings } = useChatStore();
-  const { addToast } = useToastStore();
 
   // Check auth on mount
   useEffect(() => {

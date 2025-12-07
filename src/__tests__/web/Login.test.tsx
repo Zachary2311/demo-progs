@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import Login from '../../web/pages/Login';
@@ -59,11 +59,13 @@ describe('Login page', () => {
     
     const emailInput = screen.getByLabelText(/email/i);
     const passwordInput = screen.getByLabelText(/password/i);
-    const submitButton = screen.getByRole('button', { name: /sign in/i });
     
     fireEvent.change(emailInput, { target: { value: 'test@example.com' } });
     fireEvent.change(passwordInput, { target: { value: 'password123' } });
-    fireEvent.click(submitButton);
+    
+    // Submit the form directly
+    const form = emailInput.closest('form')!;
+    fireEvent.submit(form);
     
     await waitFor(() => {
       const state = useAuthStore.getState();

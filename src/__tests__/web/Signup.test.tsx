@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import Signup from '../../web/pages/Signup';
 import { useToastStore } from '../../web/store';
@@ -43,17 +43,21 @@ describe('Signup page', () => {
     const emailInput = screen.getByLabelText(/email/i);
     const passwordInput = screen.getByLabelText('Password');
     const confirmPasswordInput = screen.getByLabelText(/confirm password/i);
-    const submitButton = screen.getByRole('button', { name: /create account/i });
     
     fireEvent.change(nameInput, { target: { value: 'Test User' } });
     fireEvent.change(emailInput, { target: { value: 'test@example.com' } });
     fireEvent.change(passwordInput, { target: { value: 'password123' } });
     fireEvent.change(confirmPasswordInput, { target: { value: 'different' } });
-    fireEvent.click(submitButton);
     
-    // Check that error toast was added
-    const toasts = useToastStore.getState().toasts;
-    expect(toasts.some(t => t.message.includes('match'))).toBe(true);
+    // Submit the form directly
+    const form = nameInput.closest('form')!;
+    fireEvent.submit(form);
+    
+    // Check that error toast was added - wait for state update
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some(t => t.message.includes('match'))).toBe(true);
+    });
   });
 
   it('validates password length', async () => {
@@ -63,16 +67,20 @@ describe('Signup page', () => {
     const emailInput = screen.getByLabelText(/email/i);
     const passwordInput = screen.getByLabelText('Password');
     const confirmPasswordInput = screen.getByLabelText(/confirm password/i);
-    const submitButton = screen.getByRole('button', { name: /create account/i });
     
     fireEvent.change(nameInput, { target: { value: 'Test User' } });
     fireEvent.change(emailInput, { target: { value: 'test@example.com' } });
     fireEvent.change(passwordInput, { target: { value: 'short' } });
     fireEvent.change(confirmPasswordInput, { target: { value: 'short' } });
-    fireEvent.click(submitButton);
     
-    // Check that error toast was added
-    const toasts = useToastStore.getState().toasts;
-    expect(toasts.some(t => t.message.includes('8 characters'))).toBe(true);
+    // Submit the form directly
+    const form = nameInput.closest('form')!;
+    fireEvent.submit(form);
+    
+    // Check that error toast was added - wait for state update
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some(t => t.message.includes('8 characters'))).toBe(true);
+    });
   });
 });

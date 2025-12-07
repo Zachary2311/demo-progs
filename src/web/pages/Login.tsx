@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore, useToastStore } from '../store';
 import { authApi } from '../api';
@@ -13,10 +13,12 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Check for verified query param
-  if (searchParams.get('verified') === 'true') {
-    addToast('Email verified! You can now log in.', 'success');
-  }
+  // Check for verified query param - only run once
+  useEffect(() => {
+    if (searchParams.get('verified') === 'true') {
+      addToast('Email verified! You can now log in.', 'success');
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -93,7 +95,7 @@ export default function Login() {
         </form>
 
         <p className="text-center text-gray-400 mt-6">
-          Don't have an account?{' '}
+          Don&apos;t have an account?{' '}
           <Link to="/signup" className="text-primary-400 hover:text-primary-300">
             Sign up
           </Link>

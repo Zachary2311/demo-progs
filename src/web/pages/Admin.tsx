@@ -292,7 +292,7 @@ function SettingsPage() {
     if (!settings) return;
 
     setSaving(true);
-    const result = await adminApi.updateSettings(settings);
+    const result = await adminApi.updateSettings(settings as unknown as Record<string, unknown>);
     
     if (result.success) {
       addToast('Settings saved', 'success');

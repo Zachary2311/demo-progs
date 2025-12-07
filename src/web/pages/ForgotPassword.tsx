@@ -36,7 +36,7 @@ export default function ForgotPassword() {
           </div>
           <h1 className="text-2xl font-bold mb-2">Check your email</h1>
           <p className="text-gray-400 mb-6">
-            We've sent a password reset link to <strong>{email}</strong>
+            We&apos;ve sent a password reset link to <strong>{email}</strong>
           </p>
           <Link to="/login" className="text-primary-400 hover:text-primary-300">
             Back to login
@@ -52,7 +52,7 @@ export default function ForgotPassword() {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold">Reset password</h1>
           <p className="text-gray-400 mt-2">
-            Enter your email and we'll send you a reset link
+            Enter your email and we&apos;ll send you a reset link
           </p>
         </div>
 

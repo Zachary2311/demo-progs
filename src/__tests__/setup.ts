@@ -1,12 +1,29 @@
 import '@testing-library/react';
-import { afterAll, afterEach, beforeAll, vi } from 'vitest';
+import '@testing-library/jest-dom/vitest';
+import { afterAll, afterEach, beforeAll } from 'vitest';
 import { setupServer } from 'msw/node';
 import { http, HttpResponse } from 'msw';
 
 // Mock crypto for tests
 Object.defineProperty(globalThis, 'crypto', {
   value: {
-    randomUUID: () => 'test-uuid-' + Math.random().toString(36).slice(2, 11),
+    randomUUID: () => {
+      // Generate a valid UUID v4 format
+      const hex = '0123456789abcdef';
+      let uuid = '';
+      for (let i = 0; i < 36; i++) {
+        if (i === 8 || i === 13 || i === 18 || i === 23) {
+          uuid += '-';
+        } else if (i === 14) {
+          uuid += '4'; // UUID v4
+        } else if (i === 19) {
+          uuid += hex[(Math.random() * 4 + 8) | 0]; // 8, 9, a, or b
+        } else {
+          uuid += hex[(Math.random() * 16) | 0];
+        }
+      }
+      return uuid;
+    },
     getRandomValues: (arr: Uint8Array) => {
       for (let i = 0; i < arr.length; i++) {
         arr[i] = Math.floor(Math.random() * 256);

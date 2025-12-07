@@ -20,7 +20,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   model?: string;
-  created_at: number;
+  created_at?: number;
   isStreaming?: boolean;
 }
 

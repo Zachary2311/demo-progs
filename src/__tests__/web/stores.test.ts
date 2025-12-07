@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { useAuthStore, useChatStore, useToastStore } from '../../web/store';
 
 describe('Zustand stores', () => {

@@ -13,7 +13,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
     <ReactMarkdown
       className="markdown-content"
       components={{
-        code({ node, className, children, ...props }) {
+        code({ className, children, ...props }) {
           const match = /language-(\w+)/.exec(className || '');
           const inline = !match;
           
