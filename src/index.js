@@ -1430,7 +1430,7 @@ function getFrontendHtml() {
       
       // Update pages
       pages.forEach(page => {
-        if (page.id === \`page-\${pageName}\`) {
+        if (page.id === 'page-' + pageName) {
           page.classList.add('active');
         } else {
           page.classList.remove('active');
@@ -1534,7 +1534,6 @@ function getFrontendHtml() {
         }
         
         refreshHistory();
-        updateStats();
       } else {
         // Update sidebar
         sidebarUser.classList.add('hidden');
@@ -1718,7 +1717,6 @@ function getFrontendHtml() {
 
         if (currentUser) {
           refreshHistory();
-          updateStats();
         }
       } catch (err) {
         console.error(err);
@@ -1781,7 +1779,6 @@ function getFrontendHtml() {
         
         if (currentUser) {
           refreshHistory();
-          updateStats();
         }
       } catch (err) {
         console.error("TTS error:", err);
@@ -1793,36 +1790,16 @@ function getFrontendHtml() {
 
     // ===== History Functions =====
     function clearHistory() {
-      historyTranscriptions.innerHTML = \`
-        <div class="empty-state">
-          <div class="empty-state-icon">🎧</div>
-          <div>No transcriptions yet</div>
-        </div>
-      \`;
-      historyTts.innerHTML = \`
-        <div class="empty-state">
-          <div class="empty-state-icon">🔊</div>
-          <div>No audio generated yet</div>
-        </div>
-      \`;
+      historyTranscriptions.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎧</div><div>No transcriptions yet</div></div>';
+      historyTts.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔊</div><div>No audio generated yet</div></div>';
     }
 
     function renderHistoryList(listEl, items, type) {
       if (!items || !items.length) {
         if (type === "transcriptions") {
-          listEl.innerHTML = \`
-            <div class="empty-state">
-              <div class="empty-state-icon">🎧</div>
-              <div>No transcriptions yet</div>
-            </div>
-          \`;
+          listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎧</div><div>No transcriptions yet</div></div>';
         } else {
-          listEl.innerHTML = \`
-            <div class="empty-state">
-              <div class="empty-state-icon">🔊</div>
-              <div>No audio generated yet</div>
-            </div>
-          \`;
+          listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔊</div><div>No audio generated yet</div></div>';
         }
         return;
       }
@@ -1833,19 +1810,14 @@ function getFrontendHtml() {
         if (type === "transcriptions") {
           title = item.filename || "(no filename)";
           const wc = item.word_count || 0;
-          meta = \`<span>\${wc} words</span><span>\${formatDateTime(item.created_at)}</span>\`;
+          meta = '<span>' + wc + ' words</span><span>' + formatDateTime(item.created_at) + '</span>';
         } else {
           title = (item.text_preview || "").slice(0, 60) + (item.text_preview && item.text_preview.length > 60 ? "…" : "");
           const chars = item.char_count || 0;
-          meta = \`<span>\${chars} chars · \${item.speaker || "voice"}</span><span>\${formatDateTime(item.created_at)}</span>\`;
+          meta = '<span>' + chars + ' chars · ' + (item.speaker || "voice") + '</span><span>' + formatDateTime(item.created_at) + '</span>';
         }
         
-        html += \`
-          <div class="history-item">
-            <div class="history-item-title">\${title}</div>
-            <div class="history-item-meta">\${meta}</div>
-          </div>
-        \`;
+        html += '<div class="history-item"><div class="history-item-title">' + title + '</div><div class="history-item-meta">' + meta + '</div></div>';
       }
       listEl.innerHTML = html;
     }
@@ -1868,38 +1840,20 @@ function getFrontendHtml() {
 
         if (sttData.ok) {
           renderHistoryList(historyTranscriptions, sttData.items, "transcriptions");
-        }
-        if (ttsData.ok) {
-          renderHistoryList(historyTts, ttsData.items, "tts");
-        }
-      } catch (err) {
-        console.error("History load failed:", err);
-      }
-    }
-
-    async function updateStats() {
-      if (!currentUser) return;
-      try {
-        const [sttRes, ttsRes] = await Promise.all([
-          fetch("/api/history/transcriptions"),
-          fetch("/api/history/tts"),
-        ]);
-
-        const sttData = await sttRes.json();
-        const ttsData = await ttsRes.json();
-
-        if (sttData.ok) {
+          // Update stats as well
           const count = sttData.items ? sttData.items.length : 0;
           const statsEl = document.getElementById('stats-transcriptions');
           if (statsEl) statsEl.textContent = count;
         }
         if (ttsData.ok) {
+          renderHistoryList(historyTts, ttsData.items, "tts");
+          // Update stats as well
           const count = ttsData.items ? ttsData.items.length : 0;
           const statsEl = document.getElementById('stats-tts');
           if (statsEl) statsEl.textContent = count;
         }
       } catch (err) {
-        console.error("Stats update failed:", err);
+        console.error("History load failed:", err);
       }
     }
 
