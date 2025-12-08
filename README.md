@@ -6,7 +6,7 @@ This API is designed to be called by FoodExpress, a permissive roleplay Discord 
 
 ## Features
 
-- **Workers AI Integration**: Uses `@cf/meta/llama-3.1-8b-instruct-fast` model
+- **Workers AI Integration**: Uses `@cf/qwen/qwen2.5-72b-instruct` model
 - **Three-way Classification**: 
   - `preparable` - Real food/drink items (including creative/custom requests)
   - `unpreparable` - Prohibited content (sexual food, meme food, non-real items, illegal/offensive content, non-food items, people/companies, abstract concepts)

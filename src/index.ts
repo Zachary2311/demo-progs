@@ -1,6 +1,6 @@
 /**
  * Cloudflare Workers API for classifying food/drink requests using Workers AI.
- * Exposes a single POST /classify endpoint that uses the Llama 3.1 8B model
+ * Exposes a single POST /classify endpoint that uses the Qwen 2.5 72B Instruct model
  * to categorize text into: preparable, unpreparable, or discretionary.
  * Intended to be called from a Discord bot backend.
  */
@@ -206,8 +206,7 @@ Always respond with EXACTLY one JSON object:
 
 No additional text, no surrounding quotes, no markdown, no comments.`;
 
-const AI_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
-const AI_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
+const AI_MODEL = '@cf/qwen/qwen2.5-72b-instruct';
 const MAX_TEXT_LENGTH = 2000;
 const RATE_LIMIT_MAX_REQUESTS = 30;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -334,7 +333,7 @@ export default {
 
       const userText = body.text.trim();
 
-      // Call Workers AI with the Llama chat format
+      // Call Workers AI with the chat message format supported by Qwen 2.5 Instruct
       const messages: { role: 'system' | 'user'; content: string }[] = [
         {
           role: 'system',
