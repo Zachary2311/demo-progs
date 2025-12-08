@@ -471,9 +471,10 @@ export default {
         if (aiModel === AI_MODEL_HEAVY) {
           // GPT-OSS-120B uses text completion format with 'input.prompt'
           const prompt = `${systemPrompt}\n\nClassify this request:\n\n"${userText}"`;
-          aiResponse = await env.AI.run(aiModel, { 
-            input: { prompt } 
-          });
+          // Per the Workers AI schema for @cf/openai/gpt-oss-120b, the request
+          // must provide an `input` string (or array of messages) directly.
+          // Passing an object with `prompt` triggers an 8001 Invalid input error.
+          aiResponse = await env.AI.run(aiModel, { input: prompt });
         } else {
           // Llama 3.1 uses chat format with 'messages'
           const messages: { role: 'system' | 'user'; content: string }[] = [
