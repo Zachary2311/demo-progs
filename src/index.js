@@ -478,6 +478,20 @@ async function handleChat(request, env) {
 
   const now = Date.now();
 
+  // Get recent conversation history for context
+  const { results: recentMessages } = await env.DB.prepare(
+    `SELECT role, content
+     FROM chat_messages
+     WHERE user_id = ?
+     ORDER BY created_at DESC
+     LIMIT 10`,
+  )
+    .bind(user.id)
+    .all();
+
+  // Reverse to get chronological order
+  const history = (recentMessages || []).reverse();
+
   // Save user message
   await env.DB.prepare(
     `INSERT INTO chat_messages
@@ -488,15 +502,21 @@ async function handleChat(request, env) {
     .run();
 
   try {
-    // Call GPT-OSS-120B model
+    // Build messages array with conversation context
+    const messages = [
+      {
+        role: "system",
+        content: "You are a helpful AI assistant for the Edge Voice Studio platform. You help users with speech recognition, text-to-speech, and general questions about AI and voice technology.",
+      },
+      // Include recent conversation history
+      ...history.map(msg => ({ role: msg.role, content: msg.content })),
+      // Add current message
+      { role: "user", content: message },
+    ];
+
+    // Call GPT-OSS-120B model with conversation context
     const aiResponse = await env.AI.run("@hf/openchat/openchat-3.5-0106", {
-      messages: [
-        {
-          role: "system",
-          content: "You are a helpful AI assistant for the Edge Voice Studio platform. You help users with speech recognition, text-to-speech, and general questions about AI and voice technology.",
-        },
-        { role: "user", content: message },
-      ],
+      messages: messages,
     });
 
     const assistantMessage = aiResponse.response || "I'm sorry, I couldn't generate a response.";
