@@ -47,6 +47,17 @@ export default {
       return handleTTSHistory(request, env);
     }
 
+    // Chat
+    if (pathname === "/api/chat" && request.method === "POST") {
+      return handleChat(request, env);
+    }
+    if (pathname === "/api/chat/history" && request.method === "GET") {
+      return handleChatHistory(request, env);
+    }
+    if (pathname === "/api/chat/clear" && request.method === "POST") {
+      return handleClearChat(request, env);
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };
@@ -444,6 +455,103 @@ async function handleTTSHistory(request, env) {
     .all();
 
   return json({ ok: true, items: results || [] });
+}
+
+/* ---------- Chat handlers ---------- */
+
+async function handleChat(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const message = String(body.message || "").trim();
+
+  if (!message) {
+    return json({ ok: false, error: "Message is required." }, 400);
+  }
+
+  const now = Date.now();
+
+  // Save user message
+  await env.DB.prepare(
+    `INSERT INTO chat_messages
+     (user_id, role, content, created_at)
+     VALUES (?, ?, ?, ?)`,
+  )
+    .bind(user.id, "user", message, now)
+    .run();
+
+  try {
+    // Call GPT-OSS-120B model
+    const aiResponse = await env.AI.run("@hf/openchat/openchat-3.5-0106", {
+      messages: [
+        {
+          role: "system",
+          content: "You are a helpful AI assistant for the Edge Voice Studio platform. You help users with speech recognition, text-to-speech, and general questions about AI and voice technology.",
+        },
+        { role: "user", content: message },
+      ],
+    });
+
+    const assistantMessage = aiResponse.response || "I'm sorry, I couldn't generate a response.";
+
+    // Save assistant response
+    await env.DB.prepare(
+      `INSERT INTO chat_messages
+       (user_id, role, content, model, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(user.id, "assistant", assistantMessage, "@hf/openchat/openchat-3.5-0106", Date.now())
+      .run();
+
+    return json({
+      ok: true,
+      message: assistantMessage,
+    });
+  } catch (err) {
+    console.error("Chat error:", err);
+    return json(
+      {
+        ok: false,
+        error: "Failed to generate response. Please try again.",
+      },
+      500,
+    );
+  }
+}
+
+async function handleChatHistory(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, role, content, model, created_at
+     FROM chat_messages
+     WHERE user_id = ?
+     ORDER BY created_at ASC
+     LIMIT 100`,
+  )
+    .bind(user.id)
+    .all();
+
+  return json({ ok: true, messages: results || [] });
+}
+
+async function handleClearChat(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  await env.DB.prepare("DELETE FROM chat_messages WHERE user_id = ?")
+    .bind(user.id)
+    .run();
+
+  return json({ ok: true });
 }
 
 /* ---------- Frontend HTML / CSS / JS ---------- */
@@ -1017,6 +1125,128 @@ function getFrontendHtml() {
       border-radius: var(--radius-md);
     }
     
+    /* Chat Styles */
+    .chat-container {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 200px);
+      max-height: 700px;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: rgba(17, 17, 27, 0.6);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+    .chat-message {
+      display: flex;
+      gap: 12px;
+      animation: fadeIn 0.3s ease;
+    }
+    .chat-message.user {
+      flex-direction: row-reverse;
+    }
+    .chat-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      flex-shrink: 0;
+    }
+    .chat-message.user .chat-avatar {
+      background: linear-gradient(135deg, var(--accent), #6366f1);
+    }
+    .chat-message.assistant .chat-avatar {
+      background: rgba(139, 92, 246, 0.2);
+      border: 1px solid var(--border);
+    }
+    .chat-bubble {
+      max-width: 70%;
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      line-height: 1.5;
+      font-size: 0.9rem;
+    }
+    .chat-message.user .chat-bubble {
+      background: linear-gradient(135deg, var(--accent), #6366f1);
+      color: white;
+      border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
+    }
+    .chat-message.assistant .chat-bubble {
+      background: rgba(17, 17, 27, 0.8);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
+    }
+    .chat-input-container {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+    }
+    .chat-input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+    .chat-input {
+      width: 100%;
+      min-height: 48px;
+      max-height: 120px;
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: rgba(17, 17, 27, 0.6);
+      color: var(--text);
+      font-size: 0.9rem;
+      resize: vertical;
+      font-family: inherit;
+    }
+    .chat-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .chat-empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+    .chat-empty-icon {
+      font-size: 4rem;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+    .chat-loading {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+    }
+    .chat-loading-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: chatLoading 1.4s ease-in-out infinite;
+    }
+    .chat-loading-dot:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    .chat-loading-dot:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+    @keyframes chatLoading {
+      0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+      30% { opacity: 1; transform: scale(1); }
+    }
+    
     /* Utility Classes */
     .mb-2 { margin-bottom: 8px; }
     .mb-4 { margin-bottom: 16px; }
@@ -1071,6 +1301,10 @@ function getFrontendHtml() {
         <a class="nav-item" data-page="history">
           <span class="nav-item-icon">📜</span>
           <span>History</span>
+        </a>
+        <a class="nav-item" data-page="chat">
+          <span class="nav-item-icon">💬</span>
+          <span>AI Chat</span>
         </a>
       </nav>
 
@@ -1360,6 +1594,70 @@ function getFrontendHtml() {
           </div>
         </div>
       </div>
+
+      <!-- Chat Page -->
+      <div id="page-chat" class="page">
+        <div class="page-wrapper">
+          <div class="page-header">
+            <h1 class="page-title">AI Chat</h1>
+            <p class="page-description">
+              Chat with our AI assistant powered by GPT-OSS-120B
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="flex justify-between items-center">
+                <div>
+                  <h2 class="card-title">
+                    💬 Chat Assistant
+                    <span class="badge">
+                      <span class="badge-dot"></span>
+                      GPT-OSS-120B
+                    </span>
+                  </h2>
+                  <p class="card-description">Ask questions about voice AI, transcription, or anything else</p>
+                </div>
+                <button id="clear-chat-btn" class="btn btn-ghost btn-small">
+                  Clear Chat
+                </button>
+              </div>
+            </div>
+
+            <div class="chat-container">
+              <div id="chat-messages" class="chat-messages">
+                <div class="chat-empty">
+                  <div class="chat-empty-icon">💬</div>
+                  <div>Start a conversation with the AI assistant</div>
+                  <div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">
+                    Ask about speech recognition, text-to-speech, or general AI topics
+                  </div>
+                </div>
+              </div>
+
+              <div id="error-chat" class="error-message">
+                <span class="error-icon">⚠️</span>
+                <span id="error-chat-text"></span>
+              </div>
+
+              <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                  <textarea
+                    id="chat-input"
+                    class="chat-input"
+                    placeholder="Type your message here..."
+                    rows="1"
+                  ></textarea>
+                </div>
+                <button id="send-chat-btn" class="btn">
+                  <span class="btn-icon">📤</span>
+                  <span>Send</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -1423,6 +1721,14 @@ function getFrontendHtml() {
     const errorTranscribeText = document.getElementById('error-transcribe-text');
     const errorTts = document.getElementById('error-tts');
     const errorTtsText = document.getElementById('error-tts-text');
+    
+    // Chat elements
+    const chatMessages = document.getElementById('chat-messages');
+    const chatInput = document.getElementById('chat-input');
+    const sendChatBtn = document.getElementById('send-chat-btn');
+    const clearChatBtn = document.getElementById('clear-chat-btn');
+    const errorChat = document.getElementById('error-chat');
+    const errorChatText = document.getElementById('error-chat-text');
 
     // ===== Navigation =====
     function navigateTo(pageName) {
@@ -1452,6 +1758,9 @@ function getFrontendHtml() {
       // Load page-specific data
       if (pageName === 'history' && currentUser) {
         refreshHistory();
+      }
+      if (pageName === 'chat' && currentUser) {
+        loadChatHistory();
       }
     }
 
@@ -1785,6 +2094,184 @@ function getFrontendHtml() {
         showError(errorTts, errorTtsText, "Unexpected error while calling TTS.");
       } finally {
         ttsBtn.disabled = false;
+      }
+    });
+
+    // ===== Chat Functions =====
+    function renderChatMessage(role, content) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'chat-message ' + role;
+      
+      const avatar = document.createElement('div');
+      avatar.className = 'chat-avatar';
+      avatar.textContent = role === 'user' ? (currentUser ? currentUser.email.charAt(0).toUpperCase() : 'U') : '🤖';
+      
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble';
+      bubble.textContent = content;
+      
+      messageDiv.appendChild(avatar);
+      messageDiv.appendChild(bubble);
+      
+      return messageDiv;
+    }
+
+    function clearChatEmpty() {
+      const emptyState = chatMessages.querySelector('.chat-empty');
+      if (emptyState) {
+        emptyState.remove();
+      }
+    }
+
+    function showChatLoading() {
+      clearChatEmpty();
+      const loadingDiv = document.createElement('div');
+      loadingDiv.className = 'chat-message assistant';
+      loadingDiv.id = 'chat-loading';
+      
+      const avatar = document.createElement('div');
+      avatar.className = 'chat-avatar';
+      avatar.textContent = '🤖';
+      
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble';
+      
+      const loading = document.createElement('div');
+      loading.className = 'chat-loading';
+      loading.innerHTML = '<div class="chat-loading-dot"></div><div class="chat-loading-dot"></div><div class="chat-loading-dot"></div>';
+      
+      bubble.appendChild(loading);
+      loadingDiv.appendChild(avatar);
+      loadingDiv.appendChild(bubble);
+      
+      chatMessages.appendChild(loadingDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function removeChatLoading() {
+      const loading = document.getElementById('chat-loading');
+      if (loading) {
+        loading.remove();
+      }
+    }
+
+    async function sendChatMessage() {
+      clearError(errorChat);
+      
+      if (!currentUser) {
+        showError(errorChat, errorChatText, "Please sign in to use the chat.");
+        return;
+      }
+
+      const message = chatInput.value.trim();
+      if (!message) {
+        showError(errorChat, errorChatText, "Please enter a message.");
+        return;
+      }
+
+      // Clear input and disable button
+      chatInput.value = '';
+      sendChatBtn.disabled = true;
+      chatInput.disabled = true;
+
+      // Add user message to UI
+      clearChatEmpty();
+      const userMessage = renderChatMessage('user', message);
+      chatMessages.appendChild(userMessage);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // Show loading indicator
+      showChatLoading();
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        });
+
+        const data = await res.json();
+
+        removeChatLoading();
+
+        if (res.status === 401) {
+          showError(errorChat, errorChatText, "Please sign in to use the chat.");
+          return;
+        }
+
+        if (!res.ok || !data.ok) {
+          showError(errorChat, errorChatText, data.error || "Failed to get response.");
+          return;
+        }
+
+        // Add assistant message to UI
+        const assistantMessage = renderChatMessage('assistant', data.message);
+        chatMessages.appendChild(assistantMessage);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      } catch (err) {
+        console.error("Chat error:", err);
+        removeChatLoading();
+        showError(errorChat, errorChatText, "Unexpected error while sending message.");
+      } finally {
+        sendChatBtn.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    async function loadChatHistory() {
+      if (!currentUser) return;
+
+      try {
+        const res = await fetch("/api/chat/history");
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (!data.ok || !data.messages || data.messages.length === 0) return;
+
+        // Clear empty state
+        clearChatEmpty();
+
+        // Render messages
+        data.messages.forEach(msg => {
+          const messageDiv = renderChatMessage(msg.role, msg.content);
+          chatMessages.appendChild(messageDiv);
+        });
+
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      } catch (err) {
+        console.error("Failed to load chat history:", err);
+      }
+    }
+
+    async function clearChat() {
+      if (!currentUser) return;
+      
+      if (!confirm('Are you sure you want to clear the chat history?')) {
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/chat/clear", {
+          method: "POST",
+        });
+
+        if (res.ok) {
+          chatMessages.innerHTML = '<div class="chat-empty"><div class="chat-empty-icon">💬</div><div>Start a conversation with the AI assistant</div><div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">Ask about speech recognition, text-to-speech, or general AI topics</div></div>';
+        }
+      } catch (err) {
+        console.error("Failed to clear chat:", err);
+      }
+    }
+
+    sendChatBtn.addEventListener('click', sendChatMessage);
+    clearChatBtn.addEventListener('click', clearChat);
+    
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChatMessage();
       }
     });
 
