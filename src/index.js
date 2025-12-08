@@ -342,7 +342,8 @@ async function handleTTS(request, env) {
   }
 
   const text = String(body.text || "").trim();
-  const speaker = String(body.speaker || "luna");
+  // Allow either `voice` or legacy `speaker` from the frontend.
+  const speaker = String(body.voice || body.speaker || "luna");
 
   if (!text) {
     return json({ ok: false, error: "Text is required." }, 400);
@@ -371,20 +372,36 @@ async function handleTTS(request, env) {
       "@cf/deepgram/aura-2-en",
       {
         text,
-        speaker,
+        voice: speaker,
         encoding: "mp3",
-        container: "none",
       },
       {
         returnRawResponse: true,
       },
     );
 
+    if (!aiResp.ok) {
+      let detail = "";
+      try {
+        detail = await aiResp.text();
+      } catch (_) {
+        /* noop */
+      }
+      console.error("TTS upstream error:", aiResp.status, detail);
+      return json(
+        {
+          ok: false,
+          error: "TTS provider rejected the request. Please try again.",
+        },
+        aiResp.status === 400 ? 400 : 502,
+      );
+    }
+
     const headers = new Headers(aiResp.headers);
     headers.set("Content-Type", "audio/mpeg");
 
     return new Response(aiResp.body, {
-      status: aiResp.status,
+      status: 200,
       headers,
     });
   } catch (err) {
@@ -1505,6 +1522,7 @@ function getFrontendHtml() {
           body: JSON.stringify({
             text,
             speaker: ttsSpeaker.value,
+            voice: ttsSpeaker.value,
           }),
         });
 
