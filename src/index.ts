@@ -14,15 +14,21 @@ interface WorkersAiResponse {
   response?: string;
 }
 
+interface WorkersAiChatInput {
+  messages: {
+    role: 'system' | 'user';
+    content: string;
+  }[];
+}
+
+interface WorkersAiTextInput {
+  prompt: string;
+}
+
 interface WorkersAi {
   run(
     model: string,
-    input: {
-      messages: {
-        role: 'system' | 'user';
-        content: string;
-      }[];
-    }
+    input: WorkersAiChatInput | { input: WorkersAiTextInput }
   ): Promise<WorkersAiResponse>;
 }
 
@@ -459,22 +465,29 @@ export default {
       // Select the appropriate system prompt based on the endpoint
       const systemPrompt = aiModel === AI_MODEL_HEAVY ? SYSTEM_PROMPT_HEAVY : SYSTEM_PROMPT;
 
-      // Build the messages array for Workers AI
-      const messages: { role: 'system' | 'user'; content: string }[] = [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
-        {
-          role: 'user',
-          content: `Classify this request:\n\n"${userText}"`,
-        },
-      ];
-
       // Call Workers AI with the selected model
       let aiResponse: WorkersAiResponse;
       try {
-        aiResponse = await env.AI.run(aiModel, { messages });
+        if (aiModel === AI_MODEL_HEAVY) {
+          // GPT-OSS-120B uses text completion format with 'input.prompt'
+          const prompt = `${systemPrompt}\n\nClassify this request:\n\n"${userText}"`;
+          aiResponse = await env.AI.run(aiModel, { 
+            input: { prompt } 
+          });
+        } else {
+          // Llama 3.1 uses chat format with 'messages'
+          const messages: { role: 'system' | 'user'; content: string }[] = [
+            {
+              role: 'system',
+              content: systemPrompt,
+            },
+            {
+              role: 'user',
+              content: `Classify this request:\n\n"${userText}"`,
+            },
+          ];
+          aiResponse = await env.AI.run(aiModel, { messages });
+        }
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : 'Unknown error';
         return jsonResponse(
