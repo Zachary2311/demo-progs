@@ -2,16 +2,17 @@
 
 A Cloudflare Workers API that uses Workers AI (Llama 3.1) to classify food and drink requests into three categories: `preparable`, `unpreparable`, or `discretionary`.
 
-This API is designed to be called by a Discord bot backend to help categorize user requests in a restaurant/food context.
+This API is designed to be called by FoodExpress, a permissive roleplay Discord bot that accepts creative food/drink orders while filtering out prohibited content.
 
 ## Features
 
 - **Workers AI Integration**: Uses `@cf/meta/llama-3.1-8b-instruct-fast` model
 - **Three-way Classification**: 
-  - `preparable` - Standard food/drink items and basic serving extras
-  - `unpreparable` - Items clearly outside restaurant scope
-  - `discretionary` - Requests that depend on staff discretion
-- **Handles Edge Cases**: Properly classifies cocktails with sexual/risky names (e.g., "sex on the beach") as normal drinks
+  - `preparable` - Real food/drink items (including creative/custom requests)
+  - `unpreparable` - Prohibited content (sexual food, meme food, non-real items, illegal/offensive content, non-food items, people/companies, abstract concepts)
+  - `discretionary` - Unusual but plausible requests requiring chef approval
+- **Permissive Approach**: Welcomes creative and custom food/drink orders
+- **Handles Edge Cases**: Properly classifies cocktails with sexual names (e.g., "sex on the beach") as normal drinks while rejecting sexually-shaped food
 - **Production Ready**: Includes error handling, input validation, and CORS support
 
 ## Getting Started
@@ -109,9 +110,20 @@ curl -X POST http://localhost:8787/classify \
 
 ### Classification Labels
 
-- **`preparable`**: Standard food, drinks (including cocktails with sexual names), or basic serving extras (napkins, straws, etc.)
-- **`unpreparable`**: Non-food items, people, abstract concepts, or clearly out-of-scope requests
-- **`discretionary`**: Off-menu items, small favors, or requests that depend on staff discretion
+- **`preparable`**: Real-world food/drink that can be prepared, including creative and custom requests. Includes standard dishes, cocktails (even with sexual names like "sex on the beach"), customizations, and service extras (napkins, straws, etc.)
+
+- **`unpreparable`**: Requests that violate FoodExpress's prohibited categories:
+  - Sexual/NSFW food items (e.g., penis-shaped cake, sexually explicit food)
+  - Meme/joke food (e.g., "Krabby Patty", obviously joking requests like "100 patty burger")
+  - Non-real-life food (e.g., "unicorn meat", "dragon eggs")
+  - Illegal items (drugs, weapons)
+  - Offensive content or slurs
+  - Non-food items (electronics, products)
+  - People, companies, or characters (roleplay restriction)
+  - Abstract concepts (happiness, advice)
+  - Out-of-scope services or conversational messages
+
+- **`discretionary`**: Unusual but plausible food/drink requests requiring chef approval (e.g., "keto dessert not on menu", "10-patty burger" if serious, creative fusion dishes)
 
 ### Example Requests
 
@@ -122,10 +134,15 @@ curl -X POST http://localhost:8787/classify \
   -H "Content-Type: application/json" \
   -d '{"text": "pepperoni pizza"}'
 
-# Cocktail with sexual name (treated as normal drink)
+# Creative/custom food
 curl -X POST http://localhost:8787/classify \
   -H "Content-Type: application/json" \
-  -d '{"text": "orgasm shot"}'
+  -d '{"text": "gluten-free pizza with vegan cheese"}'
+
+# Cocktail with sexual name (allowed)
+curl -X POST http://localhost:8787/classify \
+  -H "Content-Type: application/json" \
+  -d '{"text": "sex on the beach and fries"}'
 
 # Basic serving extra
 curl -X POST http://localhost:8787/classify \
@@ -135,6 +152,21 @@ curl -X POST http://localhost:8787/classify \
 
 **Unpreparable requests**:
 ```bash
+# Sexual/NSFW food (prohibited)
+curl -X POST http://localhost:8787/classify \
+  -H "Content-Type: application/json" \
+  -d '{"text": "penis-shaped cake"}'
+
+# Meme food
+curl -X POST http://localhost:8787/classify \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Krabby Patty from SpongeBob"}'
+
+# Non-real-life food
+curl -X POST http://localhost:8787/classify \
+  -H "Content-Type: application/json" \
+  -d '{"text": "unicorn meat"}'
+
 # Non-food item
 curl -X POST http://localhost:8787/classify \
   -H "Content-Type: application/json" \
@@ -148,23 +180,28 @@ curl -X POST http://localhost:8787/classify \
 
 **Discretionary requests**:
 ```bash
-# Off-menu item
+# Off-menu item requiring chef approval
 curl -X POST http://localhost:8787/classify \
   -H "Content-Type: application/json" \
   -d '{"text": "custom keto dessert"}'
 
-# Small favor
+# Unusual but serious request
 curl -X POST http://localhost:8787/classify \
   -H "Content-Type: application/json" \
-  -d '{"text": "phone charger"}'
+  -d '{"text": "can you make a 10-patty burger"}'
+
+# Creative fusion dish
+curl -X POST http://localhost:8787/classify \
+  -H "Content-Type: application/json" \
+  -d '{"text": "sushi pizza hybrid"}'
 ```
 
 ## Discord Bot Integration
 
-This API is designed to be called from a Discord bot backend. Here's a simple example:
+This API is designed to be called from FoodExpress or similar roleplay Discord bots. Here's a simple example:
 
 ```javascript
-// In your Discord bot
+// In your Discord bot (FoodExpress)
 async function handleUserRequest(userMessage) {
   const response = await fetch('https://your-worker.workers.dev/classify', {
     method: 'POST',
@@ -175,14 +212,14 @@ async function handleUserRequest(userMessage) {
   const result = await response.json();
   
   if (result.label === 'preparable') {
-    // Process the order
+    // Process the order - FoodExpress accepts creative requests!
     return `✅ Got it! I'll prepare: ${userMessage}`;
   } else if (result.label === 'discretionary') {
-    // Ask for confirmation or notify staff
-    return `⚠️ This might be possible: ${result.reason}`;
+    // Ask chef for approval on unusual requests
+    return `⚠️ This is unusual, but might be possible! Chef will decide: ${result.reason}`;
   } else {
-    // Politely decline
-    return `❌ Sorry, I can't help with that: ${result.reason}`;
+    // Decline prohibited requests
+    return `❌ Sorry, that's not allowed at FoodExpress: ${result.reason}`;
   }
 }
 ```
