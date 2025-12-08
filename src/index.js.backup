@@ -448,7 +448,6 @@ async function handleTTSHistory(request, env) {
 
 /* ---------- Frontend HTML / CSS / JS ---------- */
 
-
 function getFrontendHtml() {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1364,118 +1363,138 @@ function getFrontendHtml() {
   </div>
 
   <script>
-    // ===== State Management =====
+          </div>
+          <div class="transcript-output">
+            <textarea id="transcript" placeholder="Your transcription will appear here…"></textarea>
+            <div class="meta-row">
+              <div>
+                <span class="pill-mini">
+                  <span class="dot"></span>
+                  <span id="word-count-label">0 words</span>
+                </span>
+              </div>
+              <div id="filename-label">No file yet.</div>
+            </div>
+          </div>
+
+          <div id="vtt-block" class="vtt-block" style="display:none">
+            <details>
+              <summary>Show WebVTT captions from Whisper</summary>
+              <pre id="vtt-text"></pre>
+            </details>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- Text to Speech -->
+    <section class="card">
+      <div class="card-inner">
+        <div class="title-row">
+          <div class="title-main">
+            <h1>
+              <span>Text to Speech</span>
+              <span class="badge">
+                <span class="badge-dot"></span>
+                @cf/deepgram/aura-2-en
+              </span>
+            </h1>
+            <p>Turn text into expressive audio with Deepgram Aura 2 – playback inline and save to history.</p>
+          </div>
+        </div>
+
+        <div class="tts-layout">
+          <div class="tts-input">
+            <textarea id="tts-text" placeholder="Paste any text here and hit “Generate audio” to hear it read aloud…"></textarea>
+            <div class="tts-controls">
+              <label>
+                Voice
+                <select id="tts-speaker">
+                  <option value="luna">luna (default)</option>
+                  <option value="apollo">apollo</option>
+                  <option value="athena">athena</option>
+                  <option value="orion">orion</option>
+                  <option value="zeus">zeus</option>
+                </select>
+              </label>
+              <button id="tts-btn" type="button" class="btn">
+                <span class="icon">🔊</span>
+                <span>Generate audio</span>
+              </button>
+            </div>
+          </div>
+          <div class="tts-output">
+            <audio id="tts-audio" controls style="width:100%;"></audio>
+            <div id="tts-status" class="hint">Ready – sign in to keep a history of your audio.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section class="card">
+      <div class="card-inner">
+        <div class="history-header">
+          <h2>History</h2>
+          <span id="history-hint">Sign in to see your recent transcriptions and audio.</span>
+        </div>
+        <div class="history-grid">
+          <div>
+            <strong style="font-size:0.8rem;">Transcriptions</strong>
+            <ul id="history-transcriptions" class="history-list"></ul>
+          </div>
+          <div>
+            <strong style="font-size:0.8rem;">Text to Speech</strong>
+            <ul id="history-tts" class="history-list"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("audio-input");
+    const browseBtn = document.getElementById("browse-btn");
+    const fileMeta = document.getElementById("file-meta");
+    const fileNameEl = document.getElementById("file-name");
+    const fileSizeEl = document.getElementById("file-size");
+    const form = document.getElementById("upload-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const statusText = document.getElementById("status-text");
+    const statusDot = document.getElementById("status-dot");
+    const lastRun = document.getElementById("last-run");
+    const transcript = document.getElementById("transcript");
+    const wordCountLabel = document.getElementById("word-count-label");
+    const filenameLabel = document.getElementById("filename-label");
+    const errorBanner = document.getElementById("error-banner");
+    const errorText = document.getElementById("error-text");
+    const vttBlock = document.getElementById("vtt-block");
+    const vttText = document.getElementById("vtt-text");
+
+    const authForm = document.getElementById("auth-form");
+    const authAnon = document.getElementById("auth-anon");
+    const authLogged = document.getElementById("auth-logged");
+    const authEmailInput = document.getElementById("auth-email");
+    const authPasswordInput = document.getElementById("auth-password");
+    const authEmailLabel = document.getElementById("auth-email-label");
+    const signupBtn = document.getElementById("signup-btn");
+    const loginBtn = document.getElementById("login-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+
+    const ttsText = document.getElementById("tts-text");
+    const ttsSpeaker = document.getElementById("tts-speaker");
+    const ttsBtn = document.getElementById("tts-btn");
+    const ttsAudio = document.getElementById("tts-audio");
+    const ttsStatus = document.getElementById("tts-status");
+
+    const historyHint = document.getElementById("history-hint");
+    const historyTranscriptions = document.getElementById("history-transcriptions");
+    const historyTts = document.getElementById("history-tts");
+
     let currentUser = null;
-    let currentPage = 'home';
     let lastTtsUrl = null;
 
-    // ===== DOM Elements =====
-    const sidebar = document.getElementById('sidebar');
-    const mobileMenuBtn = document.getElementById('mobile-menu-btn');
-    const navItems = document.querySelectorAll('.nav-item');
-    const pages = document.querySelectorAll('.page');
-    
-    // Auth elements
-    const authForm = document.getElementById('auth-form');
-    const authEmail = document.getElementById('auth-email');
-    const authPassword = document.getElementById('auth-password');
-    const signupBtn = document.getElementById('signup-btn');
-    const loginBtn = document.getElementById('login-btn');
-    const sidebarUser = document.getElementById('sidebar-user');
-    const sidebarAuth = document.getElementById('sidebar-auth');
-    const sidebarLoginBtn = document.getElementById('sidebar-login-btn');
-    const userAvatar = document.getElementById('user-avatar');
-    const userEmailDisplay = document.getElementById('user-email-display');
-    const homeAuthCard = document.getElementById('home-auth-card');
-    const homeDashboard = document.getElementById('home-dashboard');
-    
-    // Transcription elements
-    const uploadForm = document.getElementById('upload-form');
-    const dropzone = document.getElementById('dropzone');
-    const audioInput = document.getElementById('audio-input');
-    const browseBtn = document.getElementById('browse-btn');
-    const fileInfo = document.getElementById('file-info');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    const fileSizeDisplay = document.getElementById('file-size-display');
-    const submitBtn = document.getElementById('submit-btn');
-    const statusDot = document.getElementById('status-dot');
-    const statusText = document.getElementById('status-text');
-    const transcript = document.getElementById('transcript');
-    const wordCount = document.getElementById('word-count');
-    const filenameLabel = document.getElementById('filename-label');
-    
-    // TTS elements
-    const ttsText = document.getElementById('tts-text');
-    const ttsSpeaker = document.getElementById('tts-speaker');
-    const ttsBtn = document.getElementById('tts-btn');
-    const ttsAudio = document.getElementById('tts-audio');
-    const ttsStatus = document.getElementById('tts-status');
-    
-    // History elements
-    const historyTranscriptions = document.getElementById('history-transcriptions');
-    const historyTts = document.getElementById('history-tts');
-    const historyDescription = document.getElementById('history-description');
-    
-    // Error elements
-    const errorAuth = document.getElementById('error-auth');
-    const errorAuthText = document.getElementById('error-auth-text');
-    const errorTranscribe = document.getElementById('error-transcribe');
-    const errorTranscribeText = document.getElementById('error-transcribe-text');
-    const errorTts = document.getElementById('error-tts');
-    const errorTtsText = document.getElementById('error-tts-text');
-
-    // ===== Navigation =====
-    function navigateTo(pageName) {
-      currentPage = pageName;
-      
-      // Update pages
-      pages.forEach(page => {
-        if (page.id === \`page-\${pageName}\`) {
-          page.classList.add('active');
-        } else {
-          page.classList.remove('active');
-        }
-      });
-      
-      // Update nav items
-      navItems.forEach(item => {
-        if (item.dataset.page === pageName) {
-          item.classList.add('active');
-        } else {
-          item.classList.remove('active');
-        }
-      });
-      
-      // Close mobile menu
-      sidebar.classList.remove('mobile-open');
-      
-      // Load page-specific data
-      if (pageName === 'history' && currentUser) {
-        refreshHistory();
-      }
-    }
-
-    navItems.forEach(item => {
-      item.addEventListener('click', (e) => {
-        e.preventDefault();
-        navigateTo(item.dataset.page);
-      });
-    });
-
-    mobileMenuBtn.addEventListener('click', () => {
-      sidebar.classList.toggle('mobile-open');
-    });
-    
-    // Close sidebar when clicking outside on mobile
-    document.addEventListener('click', (e) => {
-      if (window.innerWidth <= 880 && 
-          !sidebar.contains(e.target) && 
-          !mobileMenuBtn.contains(e.target)) {
-        sidebar.classList.remove('mobile-open');
-      }
-    });
-
-    // ===== Utility Functions =====
     function humanFileSize(bytes) {
       if (!bytes && bytes !== 0) return "";
       const units = ["B", "KB", "MB", "GB"];
@@ -1488,13 +1507,25 @@ function getFrontendHtml() {
       return size.toFixed(size >= 10 || i === 0 ? 0 : 1) + " " + units[i];
     }
 
-    function showError(errorEl, textEl, msg) {
-      textEl.textContent = msg;
-      errorEl.classList.add('show');
+    function showError(msg) {
+      errorText.textContent = msg;
+      errorBanner.style.display = "flex";
     }
 
-    function clearError(errorEl) {
-      errorEl.classList.remove('show');
+    function clearError() {
+      errorBanner.style.display = "none";
+      errorText.textContent = "";
+    }
+
+    function setBusy(isBusy) {
+      submitBtn.disabled = isBusy;
+      browseBtn.disabled = isBusy;
+      statusDot.classList.toggle("live", isBusy);
+      if (isBusy) {
+        statusText.textContent = "Transcribing with Whisper…";
+      } else {
+        statusText.textContent = "Idle – ready when you are.";
+      }
     }
 
     function formatDateTime(ts) {
@@ -1504,53 +1535,19 @@ function getFrontendHtml() {
       return d.toLocaleString();
     }
 
-    // ===== Auth Functions =====
     function setAuthState(user) {
       currentUser = user;
-      
       if (user) {
-        // Update sidebar
-        sidebarUser.classList.remove('hidden');
-        sidebarAuth.classList.add('hidden');
-        const initial = user.email.charAt(0).toUpperCase();
-        userAvatar.textContent = initial;
-        userEmailDisplay.textContent = user.email;
-        
-        // Update home page
-        homeAuthCard.classList.add('hidden');
-        homeDashboard.classList.remove('hidden');
-        
-        // Update history description
-        historyDescription.textContent = "Your recent transcriptions and generated audio";
-        
-        // Add logout button to sidebar
-        if (!document.getElementById('sidebar-logout-btn')) {
-          const logoutBtn = document.createElement('button');
-          logoutBtn.id = 'sidebar-logout-btn';
-          logoutBtn.className = 'btn btn-ghost btn-small mt-2';
-          logoutBtn.textContent = 'Log Out';
-          logoutBtn.addEventListener('click', handleLogout);
-          sidebarUser.parentElement.appendChild(logoutBtn);
-        }
-        
+        authLogged.style.display = "flex";
+        authAnon.style.display = "none";
+        authEmailLabel.textContent = user.email;
+        historyHint.textContent = "Showing your recent transcriptions and audio.";
         refreshHistory();
-        updateStats();
       } else {
-        // Update sidebar
-        sidebarUser.classList.add('hidden');
-        sidebarAuth.classList.remove('hidden');
-        
-        // Update home page
-        homeAuthCard.classList.remove('hidden');
-        homeDashboard.classList.add('hidden');
-        
-        // Update history description
-        historyDescription.textContent = "Sign in to view your history";
-        
-        // Remove logout button
-        const logoutBtn = document.getElementById('sidebar-logout-btn');
-        if (logoutBtn) logoutBtn.remove();
-        
+        authLogged.style.display = "none";
+        authAnon.style.display = "flex";
+        authEmailLabel.textContent = "";
+        historyHint.textContent = "Sign in to see your recent transcriptions and audio.";
         clearHistory();
       }
     }
@@ -1575,12 +1572,12 @@ function getFrontendHtml() {
     }
 
     async function authAction(mode) {
-      clearError(errorAuth);
-      const email = authEmail.value.trim();
-      const password = authPassword.value;
+      clearError();
+      const email = authEmailInput.value.trim();
+      const password = authPasswordInput.value;
 
       if (!email || !password) {
-        showError(errorAuth, errorAuthText, "Email and password are required.");
+        showError("Email and password are required.");
         return;
       }
 
@@ -1592,19 +1589,19 @@ function getFrontendHtml() {
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          showError(errorAuth, errorAuthText, data.error || "Authentication failed.");
+          showError(data.error || "Authentication failed.");
           return;
         }
-        authPassword.value = "";
-        authEmail.value = "";
+        authPasswordInput.value = "";
         setAuthState(data.user);
       } catch (err) {
         console.error("Auth error:", err);
-        showError(errorAuth, errorAuthText, "Unable to reach auth endpoint.");
+        showError("Unable to reach auth endpoint.");
       }
     }
 
     async function handleLogout() {
+      clearError();
       try {
         await fetch("/api/logout", { method: "POST" });
       } catch (err) {
@@ -1617,28 +1614,22 @@ function getFrontendHtml() {
     authForm.addEventListener("submit", (e) => e.preventDefault());
     signupBtn.addEventListener("click", () => authAction("signup"));
     loginBtn.addEventListener("click", () => authAction("login"));
-    sidebarLoginBtn.addEventListener("click", () => {
-      navigateTo('home');
-    });
+    logoutBtn.addEventListener("click", handleLogout);
 
-    // ===== Transcription Functions =====
-    browseBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      audioInput.click();
-    });
+    browseBtn.addEventListener("click", () => fileInput.click());
 
-    audioInput.addEventListener("change", () => {
-      const file = audioInput.files[0];
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
       if (!file) {
-        fileInfo.classList.add('hidden');
-        filenameLabel.textContent = "No file processed";
+        fileMeta.style.display = "none";
+        filenameLabel.textContent = "No file yet.";
         return;
       }
-      fileNameDisplay.textContent = file.name;
-      fileSizeDisplay.textContent = humanFileSize(file.size);
-      fileInfo.classList.remove('hidden');
+      fileNameEl.textContent = file.name;
+      fileSizeEl.textContent = humanFileSize(file.size);
+      fileMeta.style.display = "flex";
       filenameLabel.textContent = file.name;
-      clearError(errorTranscribe);
+      clearError();
     });
 
     ["dragenter","dragover"].forEach(eventName => {
@@ -1648,7 +1639,6 @@ function getFrontendHtml() {
         dropzone.classList.add("dragover");
       });
     });
-    
     ["dragleave","drop"].forEach(eventName => {
       dropzone.addEventListener(eventName, (e) => {
         e.preventDefault();
@@ -1656,39 +1646,33 @@ function getFrontendHtml() {
         dropzone.classList.remove("dragover");
       });
     });
-    
     dropzone.addEventListener("drop", (e) => {
       const file = e.dataTransfer.files && e.dataTransfer.files[0];
       if (file && file.type.startsWith("audio/")) {
-        audioInput.files = e.dataTransfer.files;
+        fileInput.files = e.dataTransfer.files;
         const evt = new Event("change");
-        audioInput.dispatchEvent(evt);
+        fileInput.dispatchEvent(evt);
       } else if (file) {
-        showError(errorTranscribe, errorTranscribeText, "Please drop an audio file (mp3, wav, m4a…).");
+        showError("Please drop an audio file (mp3, wav, m4a…).");
       }
     });
 
-    uploadForm.addEventListener("submit", async (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      clearError(errorTranscribe);
+      clearError();
 
-      if (!currentUser) {
-        showError(errorTranscribe, errorTranscribeText, "Please sign in before transcribing audio.");
-        return;
-      }
-
-      const file = audioInput.files[0];
+      const file = fileInput.files[0];
       if (!file) {
-        showError(errorTranscribe, errorTranscribeText, "Choose an audio file first.");
+        showError("Choose an audio file first.");
         return;
       }
 
       const formData = new FormData();
       formData.append("audio", file);
 
-      submitBtn.disabled = true;
-      statusDot.classList.add("live");
-      statusText.textContent = "Transcribing with Whisper…";
+      setBusy(true);
+      vttBlock.style.display = "none";
+      vttText.textContent = "";
 
       try {
         const response = await fetch("/api/transcribe", {
@@ -1700,47 +1684,53 @@ function getFrontendHtml() {
         const data = isJson ? await response.json() : null;
 
         if (response.status === 401) {
-          showError(errorTranscribe, errorTranscribeText, "Please sign in before transcribing audio.");
+          showError("Please sign in before transcribing audio.");
           return;
         }
 
         if (!response.ok || !data || data.ok === false) {
           const errMsg = (data && (data.error || data.message)) || "Transcription failed.";
-          showError(errorTranscribe, errorTranscribeText, errMsg);
+          showError(errMsg);
           return;
         }
 
         transcript.value = data.transcription || "";
         const wc = data.word_count ?? (data.transcription ? data.transcription.split(/\s+/).filter(Boolean).length : 0);
-        wordCount.textContent = wc + " word" + (wc === 1 ? "" : "s");
+        wordCountLabel.textContent = wc + " word" + (wc === 1 ? "" : "s");
         filenameLabel.textContent = data.filename || file.name;
-        statusText.textContent = "Transcription complete!";
+
+        if (data.vtt) {
+          vttBlock.style.display = "block";
+          vttText.textContent = data.vtt;
+        } else {
+          vttBlock.style.display = "none";
+        }
+
+        const now = new Date();
+        lastRun.textContent = now.toLocaleTimeString();
+        statusText.textContent = "Transcription complete.";
 
         if (currentUser) {
           refreshHistory();
-          updateStats();
         }
       } catch (err) {
         console.error(err);
-        showError(errorTranscribe, errorTranscribeText, "Unexpected error while calling the Worker.");
+        showError("Unexpected error while calling the Worker. Check the console/logs.");
       } finally {
-        submitBtn.disabled = false;
-        statusDot.classList.remove("live");
+        setBusy(false);
       }
     });
 
-    // ===== TTS Functions =====
     ttsBtn.addEventListener("click", async () => {
-      clearError(errorTts);
-      
+      clearError();
       if (!currentUser) {
-        showError(errorTts, errorTtsText, "Please sign in before generating audio.");
+        showError("Please sign in before generating audio.");
         return;
       }
 
       const text = ttsText.value.trim();
       if (!text) {
-        showError(errorTts, errorTtsText, "Enter some text to synthesize.");
+        showError("Enter some text to synthesize.");
         return;
       }
 
@@ -1759,11 +1749,11 @@ function getFrontendHtml() {
         });
 
         if (res.status === 401) {
-          showError(errorTts, errorTtsText, "Please sign in before generating audio.");
+          showError("Please sign in before generating audio.");
           return;
         }
         if (!res.ok) {
-          showError(errorTts, errorTtsText, "TTS request failed.");
+          showError("TTS request failed.");
           return;
         }
 
@@ -1776,78 +1766,69 @@ function getFrontendHtml() {
         ttsAudio.src = url;
         try {
           await ttsAudio.play();
-        } catch (_) {}
+        } catch (_) {
+        }
         ttsStatus.textContent = "Audio generated – hit play or download from the player.";
-        
         if (currentUser) {
           refreshHistory();
-          updateStats();
         }
       } catch (err) {
         console.error("TTS error:", err);
-        showError(errorTts, errorTtsText, "Unexpected error while calling TTS.");
+        showError("Unexpected error while calling TTS.");
       } finally {
         ttsBtn.disabled = false;
       }
     });
 
-    // ===== History Functions =====
     function clearHistory() {
-      historyTranscriptions.innerHTML = \`
-        <div class="empty-state">
-          <div class="empty-state-icon">🎧</div>
-          <div>No transcriptions yet</div>
-        </div>
-      \`;
-      historyTts.innerHTML = \`
-        <div class="empty-state">
-          <div class="empty-state-icon">🔊</div>
-          <div>No audio generated yet</div>
-        </div>
-      \`;
+      historyTranscriptions.innerHTML = "";
+      historyTts.innerHTML = "";
     }
 
     function renderHistoryList(listEl, items, type) {
+      listEl.innerHTML = "";
       if (!items || !items.length) {
-        if (type === "transcriptions") {
-          listEl.innerHTML = \`
-            <div class="empty-state">
-              <div class="empty-state-icon">🎧</div>
-              <div>No transcriptions yet</div>
-            </div>
-          \`;
-        } else {
-          listEl.innerHTML = \`
-            <div class="empty-state">
-              <div class="empty-state-icon">🔊</div>
-              <div>No audio generated yet</div>
-            </div>
-          \`;
-        }
+        const li = document.createElement("li");
+        li.textContent = "No recent " + type + " yet.";
+        listEl.appendChild(li);
         return;
       }
-      
-      let html = '';
       for (const item of items) {
-        let title, meta;
+        const li = document.createElement("li");
+        li.className = "history-item";
+
+        const title = document.createElement("div");
+        title.className = "history-item-title";
+
         if (type === "transcriptions") {
-          title = item.filename || "(no filename)";
-          const wc = item.word_count || 0;
-          meta = \`<span>\${wc} words</span><span>\${formatDateTime(item.created_at)}</span>\`;
+          const name = item.filename || "(no filename)";
+          title.textContent = name;
         } else {
-          title = (item.text_preview || "").slice(0, 60) + (item.text_preview && item.text_preview.length > 60 ? "…" : "");
-          const chars = item.char_count || 0;
-          meta = \`<span>\${chars} chars · \${item.speaker || "voice"}</span><span>\${formatDateTime(item.created_at)}</span>\`;
+          title.textContent = (item.text_preview || "").slice(0, 60) + (item.text_preview && item.text_preview.length > 60 ? "…" : "");
         }
-        
-        html += \`
-          <div class="history-item">
-            <div class="history-item-title">\${title}</div>
-            <div class="history-item-meta">\${meta}</div>
-          </div>
-        \`;
+
+        const meta = document.createElement("div");
+        meta.className = "history-item-meta";
+
+        const left = document.createElement("span");
+        if (type === "transcriptions") {
+          const wc = item.word_count || 0;
+          left.textContent = wc + " words";
+        } else {
+          const chars = item.char_count || 0;
+          left.textContent = chars + " chars · " + (item.speaker || "voice");
+        }
+
+        const right = document.createElement("span");
+        right.textContent = formatDateTime(item.created_at);
+
+        meta.appendChild(left);
+        meta.appendChild(right);
+
+        li.appendChild(title);
+        li.appendChild(meta);
+        listEl.appendChild(li);
       }
-      listEl.innerHTML = html;
     }
 
     async function refreshHistory() {
@@ -1877,35 +1858,8 @@ function getFrontendHtml() {
       }
     }
 
-    async function updateStats() {
-      if (!currentUser) return;
-      try {
-        const [sttRes, ttsRes] = await Promise.all([
-          fetch("/api/history/transcriptions"),
-          fetch("/api/history/tts"),
-        ]);
-
-        const sttData = await sttRes.json();
-        const ttsData = await ttsRes.json();
-
-        if (sttData.ok) {
-          const count = sttData.items ? sttData.items.length : 0;
-          const statsEl = document.getElementById('stats-transcriptions');
-          if (statsEl) statsEl.textContent = count;
-        }
-        if (ttsData.ok) {
-          const count = ttsData.items ? ttsData.items.length : 0;
-          const statsEl = document.getElementById('stats-tts');
-          if (statsEl) statsEl.textContent = count;
-        }
-      } catch (err) {
-        console.error("Stats update failed:", err);
-      }
-    }
-
-    // ===== Initialize =====
     refreshSession();
   </script>
 </body>
-</html>\`;
+</html>`;
 }
