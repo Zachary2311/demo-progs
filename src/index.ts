@@ -25,6 +25,7 @@ interface WorkersAi {
 
 export interface Env {
   AI: WorkersAi;
+  AUTH_TOKEN?: string;
 }
 
 /**
@@ -249,13 +250,24 @@ function isRateLimited(clientKey: string): { limited: boolean; retryAfter?: numb
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Check Authorization header if AUTH_TOKEN is set
+    if (env.AUTH_TOKEN) {
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader || authHeader !== `Bearer ${env.AUTH_TOKEN}`) {
+        return jsonResponse(
+          { error: 'Unauthorized: Missing or invalid Authorization header' },
+          401
+        );
+      }
+    }
+
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         },
       });
     }

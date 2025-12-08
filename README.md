@@ -13,7 +13,8 @@ This API is designed to be called by FoodExpress, a permissive roleplay Discord 
   - `discretionary` - Unusual but plausible requests requiring chef approval
 - **Permissive Approach**: Welcomes creative and custom food/drink orders
 - **Handles Edge Cases**: Properly classifies cocktails with sexual names (e.g., "sex on the beach") as normal drinks while rejecting sexually-shaped food
-- **Production Ready**: Includes error handling, input validation, and CORS support
+- **Authorization**: Optional Bearer token authentication via `Authorization` header
+- **Production Ready**: Includes error handling, input validation, CORS support, and auth
 
 ## Getting Started
 
@@ -83,6 +84,10 @@ curl -X POST http://localhost:8787/classify \
 
 - `text` (required): The user's request to classify
 
+**Authorization** (optional):
+- If `AUTH_TOKEN` environment variable is set, requests must include an `Authorization` header with the format: `Authorization: Bearer <token>`
+- Without the correct header, the API returns 401 Unauthorized
+
 ### Response
 
 **Success (200 OK)**:
@@ -90,6 +95,13 @@ curl -X POST http://localhost:8787/classify \
 {
   "label": "preparable",
   "reason": "This request is for a standard cocktail and a common food item."
+}
+```
+
+**Error (401 Unauthorized)** - Missing or invalid Authorization header (when AUTH_TOKEN is set):
+```json
+{
+  "error": "Unauthorized: Missing or invalid Authorization header"
 }
 ```
 
@@ -202,10 +214,14 @@ This API is designed to be called from FoodExpress or similar roleplay Discord b
 
 ```javascript
 // In your Discord bot (FoodExpress)
-async function handleUserRequest(userMessage) {
+async function handleUserRequest(userMessage, authToken) {
   const response = await fetch('https://your-worker.workers.dev/classify', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      // Optional: Include Authorization header if AUTH_TOKEN is set
+      ...(authToken && { 'Authorization': `Bearer ${authToken}` })
+    },
     body: JSON.stringify({ text: userMessage })
   });
   
@@ -248,7 +264,13 @@ The Worker is configured with:
 
 ### Environment Variables
 
-No environment variables are required. Workers AI is accessed via the built-in binding.
+- **`AUTH_TOKEN`** (optional): Bearer token for authorization. If set, all requests must include the header `Authorization: Bearer <token>`. Set this secret in Cloudflare:
+  ```bash
+  wrangler secret put AUTH_TOKEN
+  ```
+  Then provide the token to clients for authentication.
+
+If `AUTH_TOKEN` is not set, the API is publicly accessible without authentication.
 
 ## Technical Details
 
