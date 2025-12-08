@@ -1,0 +1,6 @@
+name = "food-classifier-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-08"
+
+[ai]
+binding = "AI"
