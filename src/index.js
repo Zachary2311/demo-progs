@@ -519,8 +519,27 @@ async function handleChat(request, env) {
       input: messages,
     });
 
-    // Extract the response from the results array
-    const assistantMessage = (aiResponse?.results?.[0]?.output || aiResponse?.response) || "I'm sorry, I couldn't generate a response.";
+    // Log the full response for debugging
+    console.log("AI Response structure:", JSON.stringify(aiResponse, null, 2));
+
+    // Extract the response from the results array - try multiple paths
+    let assistantMessage;
+    
+    if (aiResponse?.results?.[0]?.output) {
+      assistantMessage = aiResponse.results[0].output;
+    } else if (aiResponse?.results?.[0]?.response) {
+      assistantMessage = aiResponse.results[0].response;
+    } else if (aiResponse?.response) {
+      assistantMessage = aiResponse.response;
+    } else if (aiResponse?.output) {
+      assistantMessage = aiResponse.output;
+    } else if (typeof aiResponse === 'string') {
+      assistantMessage = aiResponse;
+    } else {
+      // Log the actual structure if we can't find the response
+      console.error("Could not extract response from AI. Full response:", JSON.stringify(aiResponse));
+      assistantMessage = `Error: Could not extract response. Response structure: ${JSON.stringify(aiResponse)}`;
+    }
 
     // Save assistant response
     await env.DB.prepare(
@@ -537,10 +556,11 @@ async function handleChat(request, env) {
     });
   } catch (err) {
     console.error("Chat error:", err);
+    console.error("Error stack:", err.stack);
     return json(
       {
         ok: false,
-        error: "Failed to generate response. Please try again.",
+        error: `Chat error: ${err.message || err.toString()}`,
       },
       500,
     );
