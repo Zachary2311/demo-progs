@@ -243,7 +243,7 @@ export default {
       // Call Workers AI with the Llama 3.1 model
       let aiResponse: any;
       try {
-        aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast', {
+        aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast' as any, {
           messages,
         });
       } catch (e) {
