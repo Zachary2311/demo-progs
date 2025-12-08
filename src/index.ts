@@ -7,10 +7,24 @@
  * Intended to be called from a Discord bot backend.
  */
 
-import { Ai } from '@cloudflare/workers-types';
+interface WorkersAiResponse {
+  response?: string;
+}
+
+interface WorkersAi {
+  run(
+    model: string,
+    input: {
+      messages: {
+        role: 'system' | 'user';
+        content: string;
+      }[];
+    }
+  ): Promise<WorkersAiResponse>;
+}
 
 export interface Env {
-  AI: Ai;
+  AI: WorkersAi;
 }
 
 /**
@@ -160,6 +174,12 @@ Always respond with EXACTLY one JSON object:
 
 No additional text, no surrounding quotes, no markdown, no comments.`;
 
+const AI_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
+const MAX_TEXT_LENGTH = 2000;
+const RATE_LIMIT_MAX_REQUESTS = 30;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+
 interface ClassifyRequest {
   text: string;
 }
@@ -172,6 +192,29 @@ interface ClassifyResponse {
 interface ErrorResponse {
   error: string;
   details?: string;
+}
+
+function getClientKey(request: Request): string {
+  // Prefer connecting IP header; fall back to user agent to avoid null keys
+  return request.headers.get('CF-Connecting-IP') || request.headers.get('x-forwarded-for') || request.headers.get('user-agent') || 'unknown-client';
+}
+
+function isRateLimited(clientKey: string): { limited: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const bucket = rateLimitBuckets.get(clientKey);
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateLimitBuckets.set(clientKey, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return { limited: false };
+  }
+
+  if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) {
+    const retryAfterMs = bucket.resetAt - now;
+    return { limited: true, retryAfter: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+  }
+
+  bucket.count += 1;
+  return { limited: false };
 }
 
 /**
@@ -206,6 +249,16 @@ export default {
       );
     }
 
+    const clientKey = getClientKey(request);
+    const rateCheck = isRateLimited(clientKey);
+    if (rateCheck.limited) {
+      return jsonResponse(
+        { error: 'Too many requests. Please try again later.' },
+        429,
+        rateCheck.retryAfter
+      );
+    }
+
     try {
       // Parse request body
       let body: ClassifyRequest;
@@ -226,10 +279,17 @@ export default {
         );
       }
 
+      if (body.text.length > MAX_TEXT_LENGTH) {
+        return jsonResponse(
+          { error: `Text exceeds maximum length of ${MAX_TEXT_LENGTH} characters` },
+          413
+        );
+      }
+
       const userText = body.text.trim();
 
       // Build the messages array for Workers AI
-      const messages = [
+      const messages: { role: 'system' | 'user'; content: string }[] = [
         {
           role: 'system',
           content: SYSTEM_PROMPT,
@@ -241,11 +301,9 @@ export default {
       ];
 
       // Call Workers AI with the Llama 3.1 model
-      let aiResponse: any;
+      let aiResponse: WorkersAiResponse;
       try {
-        aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast' as any, {
-          messages,
-        });
+        aiResponse = await env.AI.run(AI_MODEL, { messages });
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : 'Unknown error';
         return jsonResponse(
@@ -258,7 +316,7 @@ export default {
       }
 
       // Extract the response text from the AI result
-      const rawResponse = (aiResponse as any)?.response ?? '';
+      const rawResponse = aiResponse?.response ?? '';
       
       if (!rawResponse) {
         return jsonResponse(
@@ -319,12 +377,22 @@ export default {
 /**
  * Helper function to create JSON responses with CORS headers
  */
-function jsonResponse(data: ClassifyResponse | ErrorResponse, status: number): Response {
+function jsonResponse(
+  data: ClassifyResponse | ErrorResponse,
+  status: number,
+  retryAfterSeconds?: number
+): Response {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  };
+
+  if (retryAfterSeconds) {
+    headers['Retry-After'] = retryAfterSeconds.toString();
+  }
+
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    },
+    headers,
   });
 }
