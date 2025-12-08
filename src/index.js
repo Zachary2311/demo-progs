@@ -522,53 +522,87 @@ async function handleChat(request, env) {
     // Log the full response for debugging
     console.log("AI Response structure:", JSON.stringify(aiResponse, null, 2));
 
-    // Extract the response from the results array - try multiple paths
-    let assistantMessage;
+    // Parse the response - GPT-OSS-120B returns structured output with reasoning and message
+    let assistantMessage = "";
+    let reasoning = "";
     
-    if (aiResponse?.results?.[0]?.output) {
-      assistantMessage = aiResponse.results[0].output;
-    } else if (aiResponse?.results?.[0]?.response) {
-      assistantMessage = aiResponse.results[0].response;
-    } else if (aiResponse?.response) {
-      assistantMessage = aiResponse.response;
-    } else if (aiResponse?.output) {
-      assistantMessage = aiResponse.output;
-    } else if (typeof aiResponse === 'string') {
-      assistantMessage = aiResponse;
-    } else {
-      // Log the actual structure if we can't find the response
-      console.error("Could not extract response from AI. Full response:", JSON.stringify(aiResponse));
-      assistantMessage = `Error: Could not extract response. Response structure: ${JSON.stringify(aiResponse)}`;
+    // The response is an array of objects, where:
+    // - First object (type: "reasoning") contains the thinking process
+    // - Second object (type: "message") contains the actual response
+    if (Array.isArray(aiResponse)) {
+      // Process array of response objects
+      for (const item of aiResponse) {
+        if (item.type === "reasoning" && item.content) {
+          // Extract reasoning text
+          const reasoningItems = Array.isArray(item.content) ? item.content : [item.content];
+          reasoning = reasoningItems
+            .map(r => r.text || r.reasoning_text || (typeof r === 'string' ? r : JSON.stringify(r)))
+            .filter(Boolean)
+            .join('\n');
+        } else if (item.type === "message" && item.content) {
+          // Extract message text
+          const messageItems = Array.isArray(item.content) ? item.content : [item.content];
+          assistantMessage = messageItems
+            .map(m => m.text || m.output_text || (typeof m === 'string' ? m : JSON.stringify(m)))
+            .filter(Boolean)
+            .join('\n');
+        }
+      }
+    }
+    
+    // Fallback: try standard paths if array parsing didn't work
+    if (!assistantMessage) {
+      if (aiResponse?.results?.[0]?.output) {
+        assistantMessage = aiResponse.results[0].output;
+      } else if (aiResponse?.results?.[0]?.response) {
+        assistantMessage = aiResponse.results[0].response;
+      } else if (aiResponse?.response) {
+        assistantMessage = aiResponse.response;
+      } else if (aiResponse?.output) {
+        assistantMessage = aiResponse.output;
+      } else if (typeof aiResponse === 'string') {
+        assistantMessage = aiResponse;
+      }
     }
 
-    // Ensure assistantMessage is a string (convert arrays or objects to string)
+    // Ensure assistantMessage is a string
     if (typeof assistantMessage !== 'string') {
       console.warn("Assistant message is not a string, converting:", typeof assistantMessage, assistantMessage);
       if (Array.isArray(assistantMessage)) {
-        // If it's an array, join the elements
         assistantMessage = assistantMessage.map(item => 
           typeof item === 'string' ? item : JSON.stringify(item)
         ).join('\n');
       } else if (assistantMessage && typeof assistantMessage === 'object') {
-        // If it's an object, stringify it
         assistantMessage = JSON.stringify(assistantMessage);
       } else {
-        assistantMessage = String(assistantMessage || "I'm sorry, I couldn't generate a response.");
+        assistantMessage = String(assistantMessage || "");
       }
     }
+    
+    // Final fallback if still empty
+    if (!assistantMessage.trim()) {
+      console.error("Could not extract response from AI. Full response:", JSON.stringify(aiResponse));
+      assistantMessage = "I'm sorry, I couldn't generate a response.";
+    }
+    
+    // Ensure reasoning is also a string
+    if (reasoning && typeof reasoning !== 'string') {
+      reasoning = JSON.stringify(reasoning);
+    }
 
-    // Save assistant response
+    // Save assistant response with thinking
     await env.DB.prepare(
       `INSERT INTO chat_messages
-       (user_id, role, content, model, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+       (user_id, role, content, model, thinking, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(user.id, "assistant", String(assistantMessage), "@cf/openai/gpt-oss-120b", Date.now())
+      .bind(user.id, "assistant", String(assistantMessage), "@cf/openai/gpt-oss-120b", reasoning || null, Date.now())
       .run();
 
     return json({
       ok: true,
       message: assistantMessage,
+      thinking: reasoning || null,
     });
   } catch (err) {
     console.error("Chat error:", err);
@@ -588,7 +622,7 @@ async function handleChatHistory(request, env) {
   if (!user) return unauthorized();
 
   const { results } = await env.DB.prepare(
-    `SELECT id, role, content, model, created_at
+    `SELECT id, role, content, model, thinking, created_at
      FROM chat_messages
      WHERE user_id = ?
      ORDER BY created_at ASC
@@ -1302,6 +1336,51 @@ function getFrontendHtml() {
     @keyframes chatLoading {
       0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
       30% { opacity: 1; transform: scale(1); }
+    }
+    
+    /* Thinking Toggle Styles */
+    .thinking-toggle {
+      margin-top: 8px;
+      margin-bottom: -4px;
+    }
+    .thinking-toggle-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .thinking-toggle-btn:hover {
+      background: rgba(139, 92, 246, 0.1);
+      color: var(--accent);
+    }
+    .thinking-toggle-icon {
+      transition: transform 0.2s;
+      display: inline-block;
+    }
+    .thinking-toggle-btn.active .thinking-toggle-icon {
+      transform: rotate(90deg);
+    }
+    .thinking-content {
+      margin-top: 8px;
+      padding: 12px;
+      background: rgba(139, 92, 246, 0.05);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      display: none;
+      white-space: pre-wrap;
+    }
+    .thinking-content.visible {
+      display: block;
     }
     
     /* Utility Classes */
@@ -2155,7 +2234,7 @@ function getFrontendHtml() {
     });
 
     // ===== Chat Functions =====
-    function renderChatMessage(role, content) {
+    function renderChatMessage(role, content, thinking = null) {
       const messageDiv = document.createElement('div');
       messageDiv.className = 'chat-message ' + role;
       
@@ -2163,12 +2242,39 @@ function getFrontendHtml() {
       avatar.className = 'chat-avatar';
       avatar.textContent = role === 'user' ? (currentUser ? currentUser.email.charAt(0).toUpperCase() : 'U') : '🤖';
       
+      const contentWrapper = document.createElement('div');
+      contentWrapper.style.cssText = 'max-width: 70%; display: flex; flex-direction: column;';
+      
+      // Add thinking toggle for assistant messages with thinking content
+      if (role === 'assistant' && thinking) {
+        const thinkingToggle = document.createElement('div');
+        thinkingToggle.className = 'thinking-toggle';
+        
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'thinking-toggle-btn';
+        toggleBtn.innerHTML = '<span class="thinking-toggle-icon">▶</span> Thinking';
+        
+        const thinkingContent = document.createElement('div');
+        thinkingContent.className = 'thinking-content';
+        thinkingContent.textContent = thinking;
+        
+        toggleBtn.addEventListener('click', () => {
+          toggleBtn.classList.toggle('active');
+          thinkingContent.classList.toggle('visible');
+        });
+        
+        thinkingToggle.appendChild(toggleBtn);
+        thinkingToggle.appendChild(thinkingContent);
+        contentWrapper.appendChild(thinkingToggle);
+      }
+      
       const bubble = document.createElement('div');
       bubble.className = 'chat-bubble';
       bubble.textContent = content;
       
+      contentWrapper.appendChild(bubble);
       messageDiv.appendChild(avatar);
-      messageDiv.appendChild(bubble);
+      messageDiv.appendChild(contentWrapper);
       
       return messageDiv;
     }
@@ -2261,8 +2367,8 @@ function getFrontendHtml() {
           return;
         }
 
-        // Add assistant message to UI
-        const assistantMessage = renderChatMessage('assistant', data.message);
+        // Add assistant message to UI with thinking if available
+        const assistantMessage = renderChatMessage('assistant', data.message, data.thinking);
         chatMessages.appendChild(assistantMessage);
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -2290,9 +2396,9 @@ function getFrontendHtml() {
         // Clear empty state
         clearChatEmpty();
 
-        // Render messages
+        // Render messages with thinking if available
         data.messages.forEach(msg => {
-          const messageDiv = renderChatMessage(msg.role, msg.content);
+          const messageDiv = renderChatMessage(msg.role, msg.content, msg.thinking);
           chatMessages.appendChild(messageDiv);
         });
 
