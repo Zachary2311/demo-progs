@@ -2,6 +2,25 @@ const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require
 const OpenAI = require('openai');
 require('dotenv').config();
 
+// Validate required environment variables
+if (!process.env.DISCORD_TOKEN) {
+    console.error('❌ Error: DISCORD_TOKEN is not set in environment variables');
+    console.error('Please create a .env file with your Discord bot token');
+    process.exit(1);
+}
+
+if (!process.env.CLIENT_ID) {
+    console.error('❌ Error: CLIENT_ID is not set in environment variables');
+    console.error('Please add your Discord application client ID to the .env file');
+    process.exit(1);
+}
+
+if (!process.env.OPENAI_API_KEY) {
+    console.error('❌ Error: OPENAI_API_KEY is not set in environment variables');
+    console.error('Please add your OpenAI API key to the .env file');
+    process.exit(1);
+}
+
 // Initialize Discord client with necessary intents
 const client = new Client({
     intents: [
