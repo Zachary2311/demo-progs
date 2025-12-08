@@ -519,7 +519,8 @@ async function handleChat(request, env) {
       input: messages,
     });
 
-    const assistantMessage = aiResponse.response || "I'm sorry, I couldn't generate a response.";
+    // Extract the response from the results array
+    const assistantMessage = (aiResponse?.results?.[0]?.output || aiResponse?.response) || "I'm sorry, I couldn't generate a response.";
 
     // Save assistant response
     await env.DB.prepare(
