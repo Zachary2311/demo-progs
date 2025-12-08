@@ -541,13 +541,29 @@ async function handleChat(request, env) {
       assistantMessage = `Error: Could not extract response. Response structure: ${JSON.stringify(aiResponse)}`;
     }
 
+    // Ensure assistantMessage is a string (convert arrays or objects to string)
+    if (typeof assistantMessage !== 'string') {
+      console.warn("Assistant message is not a string, converting:", typeof assistantMessage, assistantMessage);
+      if (Array.isArray(assistantMessage)) {
+        // If it's an array, join the elements
+        assistantMessage = assistantMessage.map(item => 
+          typeof item === 'string' ? item : JSON.stringify(item)
+        ).join('\n');
+      } else if (assistantMessage && typeof assistantMessage === 'object') {
+        // If it's an object, stringify it
+        assistantMessage = JSON.stringify(assistantMessage);
+      } else {
+        assistantMessage = String(assistantMessage || "I'm sorry, I couldn't generate a response.");
+      }
+    }
+
     // Save assistant response
     await env.DB.prepare(
       `INSERT INTO chat_messages
        (user_id, role, content, model, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     )
-      .bind(user.id, "assistant", assistantMessage, "@cf/openai/gpt-oss-120b", Date.now())
+      .bind(user.id, "assistant", String(assistantMessage), "@cf/openai/gpt-oss-120b", Date.now())
       .run();
 
     return json({
