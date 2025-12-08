@@ -284,6 +284,16 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === 'beginexport') {
+        // Only allow specific user ID to use the bot
+        const ALLOWED_USER_ID = '837812033394180116';
+        if (interaction.user.id !== ALLOWED_USER_ID) {
+            await interaction.reply({
+                content: '❌ You do not have permission to use this bot.',
+                ephemeral: true
+            });
+            return;
+        }
+
         await interaction.deferReply({ ephemeral: false });
 
         try {
