@@ -516,7 +516,7 @@ async function handleChat(request, env) {
 
     // Call GPT-OSS-120B model with conversation context
     const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      messages: messages,
+      input: messages,
     });
 
     const assistantMessage = aiResponse.response || "I'm sorry, I couldn't generate a response.";
