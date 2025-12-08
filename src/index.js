@@ -515,7 +515,7 @@ async function handleChat(request, env) {
     ];
 
     // Call GPT-OSS-120B model with conversation context
-    const aiResponse = await env.AI.run("@hf/openchat/openchat-3.5-0106", {
+    const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
       messages: messages,
     });
 
@@ -527,7 +527,7 @@ async function handleChat(request, env) {
        (user_id, role, content, model, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     )
-      .bind(user.id, "assistant", assistantMessage, "@hf/openchat/openchat-3.5-0106", Date.now())
+      .bind(user.id, "assistant", assistantMessage, "@cf/openai/gpt-oss-120b", Date.now())
       .run();
 
     return json({
