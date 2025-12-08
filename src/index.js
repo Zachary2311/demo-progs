@@ -1861,5 +1861,5 @@ function getFrontendHtml() {
     refreshSession();
   </script>
 </body>
-</html>\`;
+</html>`;
 }
