@@ -1,0 +1,18 @@
+{
+  "name": "demo-progs",
+  "version": "1.0.0",
+  "description": "Discord bot that exports server data and generates AI-powered FAQs using OpenAI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["discord", "bot", "openai", "ai", "faq"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.2.3",
+    "openai": "^6.10.0"
+  }
+}
