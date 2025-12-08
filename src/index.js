@@ -95,11 +95,24 @@ function makeCookie(name, value, { maxAge } = {}) {
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
+    "Secure",
   ];
   if (maxAge !== undefined) {
     parts.push(`Max-Age=${maxAge}`);
   }
   return parts.join("; ");
+}
+
+// Constant-time comparison to prevent timing attacks
+function secureCompare(a, b) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }
 
 function randomId(size = 16) {
@@ -235,7 +248,7 @@ async function handleLogin(request, env) {
 
   const user = results[0];
   const hash = await hashPassword(password);
-  if (hash !== user.password_hash) {
+  if (!secureCompare(hash, user.password_hash)) {
     return json({ ok: false, error: "Invalid email or password." }, 401);
   }
 
@@ -417,7 +430,7 @@ async function handleTTS(request, env) {
     });
   } catch (err) {
     console.error("TTS error:", err);
-    return new Response("TTS failed.", { status: 500 });
+    return json({ ok: false, error: "TTS failed. Please try again." }, 500);
   }
 }
 
@@ -526,68 +539,85 @@ async function handleChat(request, env) {
     let assistantMessage = "";
     let reasoning = "";
     
-    // The response is an array of objects, where:
-    // - First object (type: "reasoning") contains the thinking process
-    // - Second object (type: "message") contains the actual response
-    if (Array.isArray(aiResponse)) {
-      // Process array of response objects
-      for (const item of aiResponse) {
-        if (item.type === "reasoning" && item.content) {
-          // Extract reasoning text
-          const reasoningItems = Array.isArray(item.content) ? item.content : [item.content];
-          reasoning = reasoningItems
-            .map(r => r.text || r.reasoning_text || (typeof r === 'string' ? r : JSON.stringify(r)))
-            .filter(Boolean)
-            .join('\n');
-        } else if (item.type === "message" && item.content) {
-          // Extract message text
-          const messageItems = Array.isArray(item.content) ? item.content : [item.content];
-          assistantMessage = messageItems
-            .map(m => m.text || m.output_text || (typeof m === 'string' ? m : JSON.stringify(m)))
-            .filter(Boolean)
-            .join('\n');
+    // Helper function to extract text from content items
+    function extractTextFromContent(content) {
+      if (!content) return "";
+      const items = Array.isArray(content) ? content : [content];
+      return items
+        .map(item => {
+          if (typeof item === 'string') return item;
+          // Handle different content types: output_text, reasoning_text, text
+          if (item.type === 'output_text' && item.text) return item.text;
+          if (item.type === 'reasoning_text' && item.text) return item.text;
+          if (item.text) return item.text;
+          if (item.output_text) return item.output_text;
+          if (item.reasoning_text) return item.reasoning_text;
+          return null;
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    
+    // Handle string response that might be JSONL (newline-delimited JSON)
+    if (typeof aiResponse === 'string') {
+      const lines = aiResponse.trim().split('\n');
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'reasoning') {
+            reasoning = extractTextFromContent(parsed.content) || reasoning;
+          } else if (parsed.type === 'message' && parsed.role === 'assistant') {
+            assistantMessage = extractTextFromContent(parsed.content) || assistantMessage;
+          }
+        } catch {
+          // If parsing fails, treat the whole string as the response
+          if (!assistantMessage) {
+            assistantMessage = aiResponse;
+          }
         }
       }
     }
-    
-    // Fallback: try standard paths if array parsing didn't work
-    if (!assistantMessage) {
-      if (aiResponse?.results?.[0]?.output) {
-        assistantMessage = aiResponse.results[0].output;
-      } else if (aiResponse?.results?.[0]?.response) {
-        assistantMessage = aiResponse.results[0].response;
-      } else if (aiResponse?.response) {
-        assistantMessage = aiResponse.response;
-      } else if (aiResponse?.output) {
-        assistantMessage = aiResponse.output;
-      } else if (typeof aiResponse === 'string') {
-        assistantMessage = aiResponse;
+    // Handle array response
+    else if (Array.isArray(aiResponse)) {
+      for (const item of aiResponse) {
+        if (item.type === "reasoning") {
+          reasoning = extractTextFromContent(item.content) || reasoning;
+        } else if (item.type === "message" && item.role === "assistant") {
+          assistantMessage = extractTextFromContent(item.content) || assistantMessage;
+        }
+      }
+    }
+    // Handle object response with various structures
+    else if (aiResponse && typeof aiResponse === 'object') {
+      // Check for direct message content
+      if (aiResponse.type === 'message' && aiResponse.role === 'assistant') {
+        assistantMessage = extractTextFromContent(aiResponse.content);
+      }
+      // Check for nested results array
+      else if (aiResponse.results?.[0]) {
+        const result = aiResponse.results[0];
+        assistantMessage = result.output || result.response || result.text || "";
+      }
+      // Check for direct response/output fields
+      else if (aiResponse.response) {
+        assistantMessage = typeof aiResponse.response === 'string' 
+          ? aiResponse.response 
+          : extractTextFromContent(aiResponse.response);
+      } else if (aiResponse.output) {
+        assistantMessage = typeof aiResponse.output === 'string' 
+          ? aiResponse.output 
+          : extractTextFromContent(aiResponse.output);
       }
     }
 
-    // Ensure assistantMessage is a string
-    if (typeof assistantMessage !== 'string') {
-      console.warn("Assistant message is not a string, converting:", typeof assistantMessage, assistantMessage);
-      if (Array.isArray(assistantMessage)) {
-        assistantMessage = assistantMessage.map(item => 
-          typeof item === 'string' ? item : JSON.stringify(item)
-        ).join('\n');
-      } else if (assistantMessage && typeof assistantMessage === 'object') {
-        assistantMessage = JSON.stringify(assistantMessage);
-      } else {
-        assistantMessage = String(assistantMessage || "");
-      }
-    }
+    // Ensure assistantMessage is a clean string
+    assistantMessage = String(assistantMessage || "").trim();
+    reasoning = String(reasoning || "").trim();
     
     // Final fallback if still empty
-    if (!assistantMessage.trim()) {
+    if (!assistantMessage) {
       console.error("Could not extract response from AI. Full response:", JSON.stringify(aiResponse));
       assistantMessage = "I'm sorry, I couldn't generate a response.";
-    }
-    
-    // Ensure reasoning is also a string
-    if (reasoning && typeof reasoning !== 'string') {
-      reasoning = JSON.stringify(reasoning);
     }
 
     // Save assistant response with thinking
@@ -2393,8 +2423,8 @@ function getFrontendHtml() {
         const data = await res.json();
         if (!data.ok || !data.messages || data.messages.length === 0) return;
 
-        // Clear empty state
-        clearChatEmpty();
+        // Clear all existing messages (including empty state) before loading history
+        chatMessages.innerHTML = '';
 
         // Render messages with thinking if available
         data.messages.forEach(msg => {
@@ -2454,17 +2484,25 @@ function getFrontendHtml() {
         return;
       }
       
+      // Helper function to escape HTML to prevent XSS
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+      
       let html = '';
       for (const item of items) {
         let title, meta;
         if (type === "transcriptions") {
-          title = item.filename || "(no filename)";
+          title = escapeHtml(item.filename || "(no filename)");
           const wc = item.word_count || 0;
-          meta = '<span>' + wc + ' words</span><span>' + formatDateTime(item.created_at) + '</span>';
+          meta = '<span>' + wc + ' words</span><span>' + escapeHtml(formatDateTime(item.created_at)) + '</span>';
         } else {
-          title = (item.text_preview || "").slice(0, 60) + (item.text_preview && item.text_preview.length > 60 ? "…" : "");
+          const preview = (item.text_preview || "").slice(0, 60) + (item.text_preview && item.text_preview.length > 60 ? "…" : "");
+          title = escapeHtml(preview);
           const chars = item.char_count || 0;
-          meta = '<span>' + chars + ' chars · ' + (item.speaker || "voice") + '</span><span>' + formatDateTime(item.created_at) + '</span>';
+          meta = '<span>' + chars + ' chars · ' + escapeHtml(item.speaker || "voice") + '</span><span>' + escapeHtml(formatDateTime(item.created_at)) + '</span>';
         }
         
         html += '<div class="history-item"><div class="history-item-title">' + title + '</div><div class="history-item-meta">' + meta + '</div></div>';
