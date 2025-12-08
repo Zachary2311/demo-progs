@@ -10,7 +10,7 @@ This implementation provides a fully functional Discord bot that:
    - Collects role information including permissions and hierarchy
 
 2. **Uses AI to Analyze Server Structure**
-   - Ranks roles by trustworthiness using OpenAI's o4-mini model
+   - Ranks roles by trustworthiness using OpenAI's GPT-5 mini model
    - Uses FLEX processing for cost-effective API calls
    - Considers role position, permissions, and naming conventions
 
@@ -24,7 +24,7 @@ This implementation provides a fully functional Discord bot that:
 ### Architecture
 - **Language**: JavaScript (Node.js)
 - **Discord Library**: discord.js v14
-- **AI Service**: OpenAI API (o4-mini model)
+- **AI Service**: OpenAI API (GPT-5 mini model)
 - **Processing Tier**: FLEX (50% cost reduction)
 
 ### Key Components
@@ -40,8 +40,8 @@ This implementation provides a fully functional Discord bot that:
 - Proper error handling for permission issues
 
 #### 3. AI Integration
-- `rankRolesByTrustworthiness()`: Uses o4-mini with FLEX for role analysis
-- `generateFAQ()`: Uses o4-mini with high reasoning for FAQ generation
+- `rankRolesByTrustworthiness()`: Uses GPT-5 mini with FLEX for role analysis
+- `generateFAQ()`: Uses GPT-5 mini with high reasoning for FAQ generation
 - Implements fallback mechanisms for API failures
 
 #### 4. Message Prioritization
@@ -68,14 +68,16 @@ OPENAI_API_KEY=<Your OpenAI API Key>
 
 ## OpenAI Model Information
 
-Based on the latest research (as of December 2024):
+Using GPT-5 mini from OpenAI:
 
-- **o4-mini**: Latest small reasoning model (released April 2025)
+- **GPT-5 mini**: Fast, cost-efficient version of GPT-5 for well-defined tasks
 - **FLEX Processing**: Cost-effective tier for non-urgent tasks
-- **Context Window**: 200K tokens
-- **Best For**: Coding, reasoning, analysis tasks
+- **Context Window**: 400K tokens
+- **Max Output**: 128K tokens
+- **Best For**: Well-defined tasks with high reasoning capabilities
+- **Pricing**: $0.25/1M input tokens, $2.00/1M output tokens (with FLEX)
 
-Note: The user requested "gpt-5-mini" which doesn't exist yet. This implementation uses "o4-mini" which is the latest available small reasoning model with FLEX support.
+GPT-5 mini supports high reasoning mode and structured outputs, making it ideal for analyzing Discord messages and generating comprehensive FAQs.
 
 ## Security Features
 

@@ -5,16 +5,16 @@ A Discord bot that exports server data (messages, users, and roles) and generate
 ## Features
 
 - **Complete Data Export**: Fetches all messages, users, and roles from your Discord server
-- **AI-Powered Role Analysis**: Uses OpenAI's o4-mini model with FLEX processing to rank roles by trustworthiness
+- **AI-Powered Role Analysis**: Uses OpenAI's GPT-5 mini model with FLEX processing to rank roles by trustworthiness
 - **Smart Message Prioritization**: Prioritizes messages from users with higher trustworthiness scores
-- **Automated FAQ Generation**: Generates comprehensive FAQs using OpenAI's o4-mini with high reasoning capabilities
+- **Automated FAQ Generation**: Generates comprehensive FAQs using OpenAI's GPT-5 mini with high reasoning capabilities
 - **Slash Command Interface**: Simple `/beginexport` command to start the process
 
 ## Requirements
 
 - Node.js 16.0.0 or higher
 - Discord Bot Token with proper permissions
-- OpenAI API Key with access to o4-mini model
+- OpenAI API Key with access to GPT-5 mini model
 
 ## Installation
 
@@ -75,7 +75,7 @@ npm start
    - Fetch all users and their roles
    - Use OpenAI to rank roles by trustworthiness (using FLEX processing for cost efficiency)
    - Prioritize messages from users with higher trustworthiness
-   - Generate a comprehensive FAQ based on the analyzed messages (using o4-mini with high reasoning)
+   - Generate a comprehensive FAQ based on the analyzed messages (using GPT-5 mini with high reasoning)
    - Send the generated FAQ back to the channel
 
 ## How It Works
@@ -86,7 +86,7 @@ npm start
 - Collects role information including permissions and hierarchy
 
 ### 2. Role Trustworthiness Analysis
-- Sends role data to OpenAI's o4-mini model
+- Sends role data to OpenAI's GPT-5 mini model
 - Uses FLEX processing (`service_tier: "flex"`) for cost-effective analysis
 - Ranks roles based on:
   - Role position in hierarchy
@@ -101,7 +101,7 @@ npm start
 
 ### 4. FAQ Generation
 - Takes top 500 messages from trustworthy users
-- Sends to OpenAI's o4-mini model with FLEX processing
+- Sends to OpenAI's GPT-5 mini model with FLEX processing
 - Uses high reasoning mode to:
   - Identify common questions and topics
   - Group related discussions
@@ -121,7 +121,7 @@ FLEX is enabled by setting `service_tier: "flex"` in the API requests.
 ## Technical Details
 
 - **Discord.js Version**: 14.x
-- **OpenAI Model**: o4-mini (latest small reasoning model as of April 2025)
+- **OpenAI Model**: GPT-5 mini (latest efficient reasoning model)
 - **Service Tier**: FLEX (cost-effective processing)
 - **Required Intents**: Guilds, GuildMessages, MessageContent, GuildMembers
 
@@ -152,7 +152,7 @@ FLEX is enabled by setting `service_tier: "flex"` in the API requests.
 
 **OpenAI API errors:**
 - Verify your API key is correct
-- Ensure you have access to the o4-mini model
+- Ensure you have access to the GPT-5 mini model
 - Check your OpenAI account has available credits
 
 **"Missing Intents" errors:**

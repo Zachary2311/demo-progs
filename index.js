@@ -135,7 +135,7 @@ async function fetchAllMembersAndRoles(guild) {
 
 // Use OpenAI with FLEX processing to rank roles by trustworthiness
 async function rankRolesByTrustworthiness(roles) {
-    console.log('Ranking roles by trustworthiness using OpenAI (o4-mini with FLEX)...');
+    console.log('Ranking roles by trustworthiness using OpenAI (gpt-5-mini with FLEX)...');
 
     const rolesList = roles.map(role => ({
         name: role.name,
@@ -154,19 +154,17 @@ ${JSON.stringify(rolesList, null, 2)}
 Provide a ranked list from most trustworthy to least trustworthy, with a brief explanation for each ranking. Format your response as a JSON array with objects containing "roleName" and "trustworthiness" (score 1-10, where 10 is most trustworthy).`;
 
     try {
-        const response = await openai.chat.completions.create({
-            model: 'o4-mini',
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt,
-                },
-            ],
+        // Using OpenAI Responses API with GPT-5 mini
+        const response = await openai.post('/v1/responses', {
+            model: 'gpt-5-mini',
+            input: prompt,
             service_tier: 'flex', // Using FLEX processing for cost efficiency
-            response_format: { type: 'json_object' },
+            text: {
+                format: 'json_object'
+            }
         });
 
-        const ranking = JSON.parse(response.choices[0].message.content);
+        const ranking = JSON.parse(response.data.output[0].content[0].text);
         console.log('Role trustworthiness ranking completed');
         return ranking;
     } catch (error) {
@@ -213,9 +211,9 @@ function prioritizeMessages(messages, members, roleRanking) {
     return prioritizedMessages;
 }
 
-// Generate FAQ using OpenAI with high reasoning (o4-mini)
+// Generate FAQ using OpenAI with high reasoning (gpt-5-mini)
 async function generateFAQ(messages) {
-    console.log('Generating FAQ using OpenAI (o4-mini with high reasoning)...');
+    console.log('Generating FAQ using OpenAI (gpt-5-mini with high reasoning)...');
 
     // Take top messages (limit to avoid token limits)
     const topMessages = messages.slice(0, 500);
@@ -238,19 +236,18 @@ ${messageTexts}
 Generate a well-structured FAQ document based on these messages.`;
 
     try {
-        const response = await openai.chat.completions.create({
-            model: 'o4-mini',
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt,
-                },
-            ],
+        // Using OpenAI Responses API with GPT-5 mini
+        const response = await openai.post('/v1/responses', {
+            model: 'gpt-5-mini',
+            input: prompt,
             service_tier: 'flex', // Using FLEX processing
-            max_completion_tokens: 4000,
+            reasoning: {
+                effort: 'high' // High reasoning mode
+            },
+            max_output_tokens: 4000,
         });
 
-        const faq = response.choices[0].message.content;
+        const faq = response.data.output[0].content[0].text;
         console.log('FAQ generation completed');
         return faq;
     } catch (error) {
