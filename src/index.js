@@ -51,11 +51,28 @@ export default {
     if (pathname === "/api/chat" && request.method === "POST") {
       return handleChat(request, env);
     }
+    if (pathname === "/api/chat/stream" && request.method === "POST") {
+      return handleChatStream(request, env);
+    }
     if (pathname === "/api/chat/history" && request.method === "GET") {
       return handleChatHistory(request, env);
     }
     if (pathname === "/api/chat/clear" && request.method === "POST") {
       return handleClearChat(request, env);
+    }
+    if (pathname === "/api/chat/regenerate" && request.method === "POST") {
+      return handleChatRegenerate(request, env);
+    }
+    if (pathname === "/api/chat/siblings" && request.method === "GET") {
+      return handleChatSiblings(request, env);
+    }
+    
+    // User Preferences
+    if (pathname === "/api/user/preferences" && request.method === "GET") {
+      return handleGetPreferences(request, env);
+    }
+    if (pathname === "/api/user/preferences" && request.method === "POST") {
+      return handleSavePreferences(request, env);
     }
 
     return new Response("Not found", { status: 404 });
@@ -470,6 +487,98 @@ async function handleTTSHistory(request, env) {
   return json({ ok: true, items: results || [] });
 }
 
+/* ---------- Chat Constants ---------- */
+
+const BASE_SYSTEM_PROMPT = `You are a helpful, knowledgeable AI assistant. You provide clear, accurate, and well-structured responses.
+
+## Response Formatting Guidelines
+
+### Use Markdown for Structure
+- Use **bold** for emphasis and important terms
+- Use *italics* for subtle emphasis or introducing concepts
+- Use \`inline code\` for technical terms, function names, file paths, and commands
+- Use headings (##, ###) to organize longer responses
+- Use bullet points (-) or numbered lists (1.) for multiple items
+
+### Code Blocks
+When sharing code, ALWAYS use fenced code blocks with the appropriate language identifier:
+\`\`\`javascript
+// JavaScript example
+const greeting = "Hello, World!";
+\`\`\`
+
+\`\`\`python
+# Python example
+greeting = "Hello, World!"
+\`\`\`
+
+### Response Style
+- Be concise but thorough
+- Start with a direct answer, then elaborate if needed
+- Use examples to illustrate complex concepts
+- Break down complex topics into digestible parts
+- If you're unsure, acknowledge uncertainty
+
+### Personality
+- Be friendly and approachable
+- Be patient and helpful
+- Avoid unnecessary jargon unless the user is technical
+- When appropriate, provide actionable next steps`;
+
+async function getSystemPrompt(env, userId) {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT custom_system_prompt FROM user_preferences WHERE user_id = ?"
+    ).bind(userId).all();
+    
+    if (results && results.length > 0 && results[0].custom_system_prompt) {
+      return BASE_SYSTEM_PROMPT + "\n\n## Custom Instructions\n" + results[0].custom_system_prompt;
+    }
+  } catch (err) {
+    console.error("Failed to get user preferences:", err);
+  }
+  return BASE_SYSTEM_PROMPT;
+}
+
+// Helper function to extract text from content items
+function extractTextFromContent(content) {
+  if (!content) return "";
+  const items = Array.isArray(content) ? content : [content];
+  return items
+    .map(item => {
+      if (typeof item === 'string') return item;
+      if (item.type === 'output_text' && item.text) return item.text;
+      if (item.type === 'reasoning_text' && item.text) return item.text;
+      if (item.text) return item.text;
+      if (item.output_text) return item.output_text;
+      if (item.reasoning_text) return item.reasoning_text;
+      return null;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+// Build context chain by following parent_message_id
+async function buildContextChain(env, userId, excludeMessageId = null) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, role, content, parent_message_id
+     FROM chat_messages
+     WHERE user_id = ?
+     ORDER BY created_at DESC
+     LIMIT 20`
+  ).bind(userId).all();
+  
+  if (!results || results.length === 0) return [];
+  
+  // Filter out the excluded message (for regeneration)
+  const messages = excludeMessageId 
+    ? results.filter(m => m.id !== excludeMessageId)
+    : results;
+  
+  // Reverse to chronological order and take last 10
+  return messages.reverse().slice(-10);
+}
+
 /* ---------- Chat handlers ---------- */
 
 async function handleChat(request, env) {
@@ -484,6 +593,7 @@ async function handleChat(request, env) {
   }
 
   const message = String(body.message || "").trim();
+  const parentMessageId = body.parentMessageId || null;
 
   if (!message) {
     return json({ ok: false, error: "Message is required." }, 400);
@@ -491,39 +601,27 @@ async function handleChat(request, env) {
 
   const now = Date.now();
 
-  // Get recent conversation history for context
-  const { results: recentMessages } = await env.DB.prepare(
-    `SELECT role, content
-     FROM chat_messages
-     WHERE user_id = ?
-     ORDER BY created_at DESC
-     LIMIT 10`,
-  )
-    .bind(user.id)
-    .all();
+  // Get conversation context
+  const history = await buildContextChain(env, user.id);
 
-  // Reverse to get chronological order
-  const history = (recentMessages || []).reverse();
-
-  // Save user message
-  await env.DB.prepare(
+  // Save user message with parent reference
+  const userMsgResult = await env.DB.prepare(
     `INSERT INTO chat_messages
-     (user_id, role, content, created_at)
-     VALUES (?, ?, ?, ?)`,
+     (user_id, role, content, parent_message_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(user.id, "user", message, now)
+    .bind(user.id, "user", message, parentMessageId, now)
     .run();
+  
+  const userMessageId = userMsgResult.meta.last_row_id;
 
   try {
+    const systemPrompt = await getSystemPrompt(env, user.id);
+    
     // Build messages array with conversation context
     const messages = [
-      {
-        role: "system",
-        content: "You are a helpful AI assistant for the Edge Voice Studio platform. You help users with speech recognition, text-to-speech, and general questions about AI and voice technology.",
-      },
-      // Include recent conversation history
+      { role: "system", content: systemPrompt },
       ...history.map(msg => ({ role: msg.role, content: msg.content })),
-      // Add current message
       { role: "user", content: message },
     ];
 
@@ -532,33 +630,12 @@ async function handleChat(request, env) {
       input: messages,
     });
 
-    // Log the full response for debugging
     console.log("AI Response structure:", JSON.stringify(aiResponse, null, 2));
 
-    // Parse the response - GPT-OSS-120B returns structured output with reasoning and message
     let assistantMessage = "";
     let reasoning = "";
     
-    // Helper function to extract text from content items
-    function extractTextFromContent(content) {
-      if (!content) return "";
-      const items = Array.isArray(content) ? content : [content];
-      return items
-        .map(item => {
-          if (typeof item === 'string') return item;
-          // Handle different content types: output_text, reasoning_text, text
-          if (item.type === 'output_text' && item.text) return item.text;
-          if (item.type === 'reasoning_text' && item.text) return item.text;
-          if (item.text) return item.text;
-          if (item.output_text) return item.output_text;
-          if (item.reasoning_text) return item.reasoning_text;
-          return null;
-        })
-        .filter(Boolean)
-        .join('\n');
-    }
-    
-    // Handle string response that might be JSONL (newline-delimited JSON)
+    // Handle string response that might be JSONL
     if (typeof aiResponse === 'string') {
       const lines = aiResponse.trim().split('\n');
       for (const line of lines) {
@@ -570,14 +647,12 @@ async function handleChat(request, env) {
             assistantMessage = extractTextFromContent(parsed.content) || assistantMessage;
           }
         } catch {
-          // If parsing fails, treat the whole string as the response
           if (!assistantMessage) {
             assistantMessage = aiResponse;
           }
         }
       }
     }
-    // Handle array response
     else if (Array.isArray(aiResponse)) {
       for (const item of aiResponse) {
         if (item.type === "reasoning") {
@@ -587,9 +662,7 @@ async function handleChat(request, env) {
         }
       }
     }
-    // Handle object response with various structures
     else if (aiResponse && typeof aiResponse === 'object') {
-      // Check for output array (new Cloudflare Workers AI format)
       if (Array.isArray(aiResponse.output)) {
         for (const item of aiResponse.output) {
           if (item.type === "reasoning") {
@@ -599,16 +672,13 @@ async function handleChat(request, env) {
           }
         }
       }
-      // Check for direct message content
       else if (aiResponse.type === 'message' && aiResponse.role === 'assistant') {
         assistantMessage = extractTextFromContent(aiResponse.content);
       }
-      // Check for nested results array
       else if (aiResponse.results?.[0]) {
         const result = aiResponse.results[0];
         assistantMessage = result.output || result.response || result.text || "";
       }
-      // Check for direct response/output fields (string output)
       else if (aiResponse.response) {
         assistantMessage = typeof aiResponse.response === 'string' 
           ? aiResponse.response 
@@ -618,29 +688,29 @@ async function handleChat(request, env) {
       }
     }
 
-    // Ensure assistantMessage is a clean string
     assistantMessage = String(assistantMessage || "").trim();
     reasoning = String(reasoning || "").trim();
     
-    // Final fallback if still empty
     if (!assistantMessage) {
       console.error("Could not extract response from AI. Full response:", JSON.stringify(aiResponse));
       assistantMessage = "I'm sorry, I couldn't generate a response.";
     }
 
-    // Save assistant response with thinking
-    await env.DB.prepare(
+    // Save assistant response with parent reference to user message
+    const assistantResult = await env.DB.prepare(
       `INSERT INTO chat_messages
-       (user_id, role, content, model, thinking, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       (user_id, role, content, model, thinking, parent_message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(user.id, "assistant", String(assistantMessage), "@cf/openai/gpt-oss-120b", reasoning || null, Date.now())
+      .bind(user.id, "assistant", String(assistantMessage), "@cf/openai/gpt-oss-120b", reasoning || null, userMessageId, Date.now())
       .run();
 
     return json({
       ok: true,
       message: assistantMessage,
       thinking: reasoning || null,
+      messageId: assistantResult.meta.last_row_id,
+      userMessageId: userMessageId,
     });
   } catch (err) {
     console.error("Chat error:", err);
@@ -655,12 +725,394 @@ async function handleChat(request, env) {
   }
 }
 
+/* ---------- Streaming Chat Handler ---------- */
+
+async function handleChatStream(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) {
+    return new Response(JSON.stringify({ ok: false, error: "Not authenticated" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ ok: false, error: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const message = String(body.message || "").trim();
+  const parentMessageId = body.parentMessageId || null;
+
+  if (!message) {
+    return new Response(JSON.stringify({ ok: false, error: "Message is required." }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const now = Date.now();
+
+  // Get conversation context
+  const history = await buildContextChain(env, user.id);
+
+  // Save user message
+  const userMsgResult = await env.DB.prepare(
+    `INSERT INTO chat_messages
+     (user_id, role, content, parent_message_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(user.id, "user", message, parentMessageId, now)
+    .run();
+  
+  const userMessageId = userMsgResult.meta.last_row_id;
+
+  const systemPrompt = await getSystemPrompt(env, user.id);
+  
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map(msg => ({ role: msg.role, content: msg.content })),
+    { role: "user", content: message },
+  ];
+
+  try {
+    // Call with stream: true
+    const stream = await env.AI.run("@cf/openai/gpt-oss-120b", {
+      input: messages,
+      stream: true,
+    });
+
+    let fullContent = "";
+    let fullThinking = "";
+
+    // Create a TransformStream to process and forward chunks
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+
+    // Process the stream in the background
+    (async () => {
+      try {
+        const reader = stream.getReader();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          // value could be a string chunk or an object
+          let chunk = value;
+          if (typeof value !== 'string') {
+            chunk = new TextDecoder().decode(value);
+          }
+          
+          // Parse SSE data
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') {
+                continue;
+              }
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.response) {
+                  fullContent += parsed.response;
+                  // Forward to client
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
+                }
+                if (parsed.thinking) {
+                  fullThinking += parsed.thinking;
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', text: parsed.thinking })}\n\n`));
+                }
+              } catch {
+                // Raw text chunk
+                fullContent += data;
+                await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
+              }
+            } else if (line.trim() && !line.startsWith(':')) {
+              // Raw content without SSE prefix
+              fullContent += line;
+              await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: line })}\n\n`));
+            }
+          }
+        }
+        
+        // Save the complete message
+        const assistantResult = await env.DB.prepare(
+          `INSERT INTO chat_messages
+           (user_id, role, content, model, thinking, parent_message_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(user.id, "assistant", fullContent.trim() || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", fullThinking || null, userMessageId, Date.now())
+          .run();
+        
+        // Send completion event with message ID
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ 
+          type: 'done', 
+          messageId: assistantResult.meta.last_row_id,
+          userMessageId: userMessageId
+        })}\n\n`));
+        
+      } catch (err) {
+        console.error("Stream processing error:", err);
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
+      } finally {
+        await writer.close();
+      }
+    })();
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    });
+  } catch (err) {
+    console.error("Stream setup error:", err);
+    return new Response(JSON.stringify({ ok: false, error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+/* ---------- Chat Regenerate Handler ---------- */
+
+async function handleChatRegenerate(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const messageId = body.messageId;
+  if (!messageId) {
+    return json({ ok: false, error: "messageId is required." }, 400);
+  }
+
+  // Get the message to regenerate
+  const { results: msgResults } = await env.DB.prepare(
+    `SELECT id, role, content, parent_message_id
+     FROM chat_messages
+     WHERE id = ? AND user_id = ?`
+  ).bind(messageId, user.id).all();
+
+  if (!msgResults || msgResults.length === 0) {
+    return json({ ok: false, error: "Message not found." }, 404);
+  }
+
+  const originalMsg = msgResults[0];
+  
+  // Get the parent user message to regenerate from
+  let userMessage = "";
+  let userMessageId = null;
+  
+  if (originalMsg.role === 'assistant' && originalMsg.parent_message_id) {
+    const { results: parentResults } = await env.DB.prepare(
+      `SELECT id, content FROM chat_messages WHERE id = ?`
+    ).bind(originalMsg.parent_message_id).all();
+    
+    if (parentResults && parentResults.length > 0) {
+      userMessage = parentResults[0].content;
+      userMessageId = parentResults[0].id;
+    }
+  }
+
+  if (!userMessage) {
+    return json({ ok: false, error: "Could not find parent user message." }, 400);
+  }
+
+  // Build context excluding the message being regenerated
+  const history = await buildContextChain(env, user.id, messageId);
+  
+  const systemPrompt = await getSystemPrompt(env, user.id);
+  
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map(msg => ({ role: msg.role, content: msg.content })),
+    { role: "user", content: userMessage },
+  ];
+
+  try {
+    const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
+      input: messages,
+    });
+
+    let assistantMessage = "";
+    let reasoning = "";
+    
+    if (typeof aiResponse === 'string') {
+      const lines = aiResponse.trim().split('\n');
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'reasoning') {
+            reasoning = extractTextFromContent(parsed.content) || reasoning;
+          } else if (parsed.type === 'message' && parsed.role === 'assistant') {
+            assistantMessage = extractTextFromContent(parsed.content) || assistantMessage;
+          }
+        } catch {
+          if (!assistantMessage) assistantMessage = aiResponse;
+        }
+      }
+    } else if (Array.isArray(aiResponse)) {
+      for (const item of aiResponse) {
+        if (item.type === "reasoning") {
+          reasoning = extractTextFromContent(item.content) || reasoning;
+        } else if (item.type === "message" && item.role === "assistant") {
+          assistantMessage = extractTextFromContent(item.content) || assistantMessage;
+        }
+      }
+    } else if (aiResponse && typeof aiResponse === 'object') {
+      if (Array.isArray(aiResponse.output)) {
+        for (const item of aiResponse.output) {
+          if (item.type === "reasoning") {
+            reasoning = extractTextFromContent(item.content) || reasoning;
+          } else if (item.type === "message" && item.role === "assistant") {
+            assistantMessage = extractTextFromContent(item.content) || assistantMessage;
+          }
+        }
+      } else if (aiResponse.response) {
+        assistantMessage = typeof aiResponse.response === 'string' ? aiResponse.response : extractTextFromContent(aiResponse.response);
+      } else if (typeof aiResponse.output === 'string') {
+        assistantMessage = aiResponse.output;
+      }
+    }
+
+    assistantMessage = String(assistantMessage || "").trim();
+    reasoning = String(reasoning || "").trim();
+    
+    if (!assistantMessage) {
+      assistantMessage = "I'm sorry, I couldn't generate a response.";
+    }
+
+    // Save as a sibling (same parent_message_id as the original)
+    const newMsgResult = await env.DB.prepare(
+      `INSERT INTO chat_messages
+       (user_id, role, content, model, thinking, parent_message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(user.id, "assistant", assistantMessage, "@cf/openai/gpt-oss-120b", reasoning || null, userMessageId, Date.now())
+      .run();
+
+    return json({
+      ok: true,
+      message: assistantMessage,
+      thinking: reasoning || null,
+      messageId: newMsgResult.meta.last_row_id,
+      originalMessageId: messageId,
+    });
+  } catch (err) {
+    console.error("Regenerate error:", err);
+    return json({ ok: false, error: err.message }, 500);
+  }
+}
+
+/* ---------- Chat Siblings Handler ---------- */
+
+async function handleChatSiblings(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  const url = new URL(request.url);
+  const messageId = url.searchParams.get("messageId");
+  
+  if (!messageId) {
+    return json({ ok: false, error: "messageId is required." }, 400);
+  }
+
+  // Get the message to find its parent
+  const { results: msgResults } = await env.DB.prepare(
+    `SELECT parent_message_id FROM chat_messages WHERE id = ? AND user_id = ?`
+  ).bind(messageId, user.id).all();
+
+  if (!msgResults || msgResults.length === 0) {
+    return json({ ok: false, error: "Message not found." }, 404);
+  }
+
+  const parentId = msgResults[0].parent_message_id;
+  
+  if (!parentId) {
+    return json({ ok: true, siblings: [{ id: parseInt(messageId) }], currentIndex: 0 });
+  }
+
+  // Get all siblings (messages with same parent)
+  const { results: siblings } = await env.DB.prepare(
+    `SELECT id, content, thinking, created_at
+     FROM chat_messages
+     WHERE parent_message_id = ? AND user_id = ? AND role = 'assistant'
+     ORDER BY created_at ASC`
+  ).bind(parentId, user.id).all();
+
+  const currentIndex = siblings.findIndex(s => s.id === parseInt(messageId));
+
+  return json({
+    ok: true,
+    siblings: siblings,
+    currentIndex: currentIndex >= 0 ? currentIndex : 0,
+  });
+}
+
+/* ---------- User Preferences Handlers ---------- */
+
+async function handleGetPreferences(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  const { results } = await env.DB.prepare(
+    "SELECT custom_system_prompt FROM user_preferences WHERE user_id = ?"
+  ).bind(user.id).all();
+
+  return json({
+    ok: true,
+    preferences: {
+      customSystemPrompt: results && results.length > 0 ? results[0].custom_system_prompt : "",
+    },
+  });
+}
+
+async function handleSavePreferences(request, env) {
+  const user = await getSessionUser(env, request);
+  if (!user) return unauthorized();
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const customPrompt = String(body.customSystemPrompt || "").trim();
+  const now = Date.now();
+
+  // Upsert preferences
+  await env.DB.prepare(
+    `INSERT INTO user_preferences (user_id, custom_system_prompt, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       custom_system_prompt = excluded.custom_system_prompt,
+       updated_at = excluded.updated_at`
+  ).bind(user.id, customPrompt || null, now, now).run();
+
+  return json({ ok: true });
+}
+
 async function handleChatHistory(request, env) {
   const user = await getSessionUser(env, request);
   if (!user) return unauthorized();
 
   const { results } = await env.DB.prepare(
-    `SELECT id, role, content, model, thinking, created_at
+    `SELECT id, role, content, model, thinking, parent_message_id, created_at
      FROM chat_messages
      WHERE user_id = ?
      ORDER BY created_at ASC
@@ -693,6 +1145,11 @@ function getFrontendHtml() {
   <meta charset="UTF-8" />
   <title>Edge Voice Studio · Whisper + Aura 2</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Highlight.js for code syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -1421,6 +1878,300 @@ function getFrontendHtml() {
       display: block;
     }
     
+    /* Markdown Styles in Chat */
+    .chat-bubble.markdown {
+      line-height: 1.6;
+    }
+    .chat-bubble.markdown h1,
+    .chat-bubble.markdown h2,
+    .chat-bubble.markdown h3,
+    .chat-bubble.markdown h4 {
+      margin: 16px 0 8px 0;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .chat-bubble.markdown h1:first-child,
+    .chat-bubble.markdown h2:first-child,
+    .chat-bubble.markdown h3:first-child {
+      margin-top: 0;
+    }
+    .chat-bubble.markdown h1 { font-size: 1.4rem; }
+    .chat-bubble.markdown h2 { font-size: 1.2rem; }
+    .chat-bubble.markdown h3 { font-size: 1.1rem; }
+    .chat-bubble.markdown p {
+      margin: 8px 0;
+    }
+    .chat-bubble.markdown p:first-child {
+      margin-top: 0;
+    }
+    .chat-bubble.markdown p:last-child {
+      margin-bottom: 0;
+    }
+    .chat-bubble.markdown ul,
+    .chat-bubble.markdown ol {
+      margin: 8px 0;
+      padding-left: 24px;
+    }
+    .chat-bubble.markdown li {
+      margin: 4px 0;
+    }
+    .chat-bubble.markdown code {
+      background: rgba(139, 92, 246, 0.15);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+      font-size: 0.85em;
+    }
+    .chat-bubble.markdown pre {
+      background: #1e1e2e;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      margin: 12px 0;
+      overflow-x: auto;
+      position: relative;
+    }
+    .chat-bubble.markdown pre code {
+      background: transparent;
+      padding: 0;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    .chat-bubble.markdown blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 16px;
+      margin: 12px 0;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    .chat-bubble.markdown a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .chat-bubble.markdown a:hover {
+      text-decoration: underline;
+    }
+    .chat-bubble.markdown table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 12px 0;
+    }
+    .chat-bubble.markdown th,
+    .chat-bubble.markdown td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .chat-bubble.markdown th {
+      background: rgba(139, 92, 246, 0.1);
+      font-weight: 600;
+    }
+    .chat-bubble.markdown strong {
+      font-weight: 600;
+      color: var(--text);
+    }
+    .chat-bubble.markdown em {
+      font-style: italic;
+    }
+    .chat-bubble.markdown hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 16px 0;
+    }
+    
+    /* Code block copy button */
+    .code-block-wrapper {
+      position: relative;
+    }
+    .code-copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(139, 92, 246, 0.3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px 8px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      opacity: 0;
+    }
+    .code-block-wrapper:hover .code-copy-btn {
+      opacity: 1;
+    }
+    .code-copy-btn:hover {
+      background: var(--accent);
+      color: white;
+    }
+    .code-copy-btn.copied {
+      background: #22c55e;
+      color: white;
+    }
+    
+    /* Message Actions */
+    .message-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .chat-message:hover .message-actions {
+      opacity: 1;
+    }
+    .message-action-btn {
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .message-action-btn:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    
+    /* Branch Navigation */
+    .branch-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+    .branch-nav-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .branch-nav-btn:hover:not(:disabled) {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .branch-nav-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+    .branch-counter {
+      min-width: 50px;
+      text-align: center;
+    }
+    
+    /* Streaming cursor animation */
+    .streaming-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: var(--accent);
+      margin-left: 2px;
+      animation: blink 1s infinite;
+      vertical-align: text-bottom;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+    
+    /* Chat Tabs */
+    .chat-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .chat-tab {
+      padding: 12px 20px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    .chat-tab:hover {
+      color: var(--text);
+      background: var(--accent-soft);
+    }
+    .chat-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .chat-tab-content {
+      display: none;
+    }
+    .chat-tab-content.active {
+      display: block;
+    }
+    
+    /* Customization Panel */
+    .customization-panel {
+      padding: 20px;
+    }
+    .customization-panel h3 {
+      margin-bottom: 8px;
+      font-size: 1rem;
+    }
+    .customization-panel p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .customization-textarea {
+      width: 100%;
+      min-height: 200px;
+      padding: 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: rgba(17, 17, 27, 0.6);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      resize: vertical;
+      line-height: 1.6;
+    }
+    .customization-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .customization-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .save-status {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .save-status.success {
+      color: #22c55e;
+    }
+    .save-status.error {
+      color: #ef4444;
+    }
+    
     /* Utility Classes */
     .mb-2 { margin-bottom: 8px; }
     .mb-4 { margin-bottom: 16px; }
@@ -1780,53 +2531,98 @@ function getFrontendHtml() {
           </div>
 
           <div class="card">
-            <div class="card-header">
-              <div class="flex justify-between items-center">
-                <div>
-                  <h2 class="card-title">
-                    💬 Chat Assistant
-                    <span class="badge">
-                      <span class="badge-dot"></span>
-                      GPT-OSS-120B
-                    </span>
-                  </h2>
-                  <p class="card-description">Ask questions about voice AI, transcription, or anything else</p>
-                </div>
-                <button id="clear-chat-btn" class="btn btn-ghost btn-small">
-                  Clear Chat
-                </button>
-              </div>
+            <!-- Chat Tabs -->
+            <div class="chat-tabs">
+              <button class="chat-tab active" data-tab="chat">💬 Chat</button>
+              <button class="chat-tab" data-tab="customize">⚙️ Customize</button>
             </div>
 
-            <div class="chat-container">
-              <div id="chat-messages" class="chat-messages">
-                <div class="chat-empty">
-                  <div class="chat-empty-icon">💬</div>
-                  <div>Start a conversation with the AI assistant</div>
-                  <div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">
-                    Ask about speech recognition, text-to-speech, or general AI topics
+            <!-- Chat Tab Content -->
+            <div id="chat-tab-chat" class="chat-tab-content active">
+              <div class="card-header">
+                <div class="flex justify-between items-center">
+                  <div>
+                    <h2 class="card-title">
+                      Chat Assistant
+                      <span class="badge">
+                        <span class="badge-dot"></span>
+                        GPT-OSS-120B
+                      </span>
+                    </h2>
+                    <p class="card-description">Ask questions and get markdown-formatted responses with code highlighting</p>
+                  </div>
+                  <div class="flex gap-2">
+                    <button id="toggle-streaming-btn" class="btn btn-ghost btn-small" title="Toggle streaming mode">
+                      ⚡ Streaming
+                    </button>
+                    <button id="clear-chat-btn" class="btn btn-ghost btn-small">
+                      Clear Chat
+                    </button>
                   </div>
                 </div>
               </div>
 
-              <div id="error-chat" class="error-message">
-                <span class="error-icon">⚠️</span>
-                <span id="error-chat-text"></span>
-              </div>
-
-              <div class="chat-input-container">
-                <div class="chat-input-wrapper">
-                  <textarea
-                    id="chat-input"
-                    class="chat-input"
-                    placeholder="Type your message here..."
-                    rows="1"
-                  ></textarea>
+              <div class="chat-container">
+                <div id="chat-messages" class="chat-messages">
+                  <div class="chat-empty">
+                    <div class="chat-empty-icon">💬</div>
+                    <div>Start a conversation with the AI assistant</div>
+                    <div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">
+                      Responses support **markdown**, \`code\`, and syntax highlighting
+                    </div>
+                  </div>
                 </div>
-                <button id="send-chat-btn" class="btn">
-                  <span class="btn-icon">📤</span>
-                  <span>Send</span>
-                </button>
+
+                <div id="error-chat" class="error-message">
+                  <span class="error-icon">⚠️</span>
+                  <span id="error-chat-text"></span>
+                </div>
+
+                <div class="chat-input-container">
+                  <div class="chat-input-wrapper">
+                    <textarea
+                      id="chat-input"
+                      class="chat-input"
+                      placeholder="Type your message here... (Shift+Enter for new line)"
+                      rows="1"
+                    ></textarea>
+                  </div>
+                  <button id="send-chat-btn" class="btn">
+                    <span class="btn-icon">📤</span>
+                    <span>Send</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Customize Tab Content -->
+            <div id="chat-tab-customize" class="chat-tab-content">
+              <div class="customization-panel">
+                <h3>🎨 Customize AI Personality</h3>
+                <p>
+                  Add custom instructions to personalize how the AI responds to you. 
+                  These instructions are added to the base system prompt and affect all future conversations.
+                </p>
+                <textarea 
+                  id="custom-prompt-input" 
+                  class="customization-textarea"
+                  placeholder="Examples:
+• Always respond in a casual, friendly tone
+• Use more technical language and assume I'm an expert
+• Include code examples whenever possible
+• Keep responses brief and to the point
+• Explain things as if I'm a beginner
+• Always suggest next steps or follow-up questions"
+                ></textarea>
+                <div class="customization-actions">
+                  <button id="save-preferences-btn" class="btn">
+                    💾 Save Preferences
+                  </button>
+                  <button id="reset-preferences-btn" class="btn btn-ghost">
+                    Reset to Default
+                  </button>
+                  <div id="save-status" class="save-status"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -1840,6 +2636,67 @@ function getFrontendHtml() {
     let currentUser = null;
     let currentPage = 'home';
     let lastTtsUrl = null;
+    let streamingEnabled = true;
+    let messageIdMap = new Map(); // Maps DOM elements to message IDs
+
+    // ===== Markdown Configuration =====
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          try {
+            return hljs.highlight(code, { language: lang }).value;
+          } catch (e) {}
+        }
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: true,
+      gfm: true,
+    });
+
+    // Custom renderer for code blocks with copy button
+    const renderer = new marked.Renderer();
+    renderer.code = function(code, language) {
+      const lang = language || '';
+      const highlighted = lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code, { language: lang }).value
+        : hljs.highlightAuto(code).value;
+      return \`<div class="code-block-wrapper">
+        <button class="code-copy-btn" onclick="copyCodeBlock(this)">📋 Copy</button>
+        <pre><code class="hljs \${lang}">\${highlighted}</code></pre>
+      </div>\`;
+    };
+    marked.use({ renderer });
+
+    // Copy code block function
+    window.copyCodeBlock = function(btn) {
+      const codeEl = btn.parentElement.querySelector('code');
+      const text = codeEl.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '✓ Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = '📋 Copy';
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    };
+
+    // Render markdown safely
+    function renderMarkdown(text) {
+      try {
+        return marked.parse(text);
+      } catch (e) {
+        console.error('Markdown parsing error:', e);
+        return escapeHtml(text);
+      }
+    }
+
+    // Helper function to escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
 
     // ===== DOM Elements =====
     const sidebar = document.getElementById('sidebar');
@@ -1903,6 +2760,34 @@ function getFrontendHtml() {
     const clearChatBtn = document.getElementById('clear-chat-btn');
     const errorChat = document.getElementById('error-chat');
     const errorChatText = document.getElementById('error-chat-text');
+    const toggleStreamingBtn = document.getElementById('toggle-streaming-btn');
+    
+    // Chat tabs
+    const chatTabs = document.querySelectorAll('.chat-tab');
+    const chatTabContents = document.querySelectorAll('.chat-tab-content');
+    
+    // Customization elements
+    const customPromptInput = document.getElementById('custom-prompt-input');
+    const savePreferencesBtn = document.getElementById('save-preferences-btn');
+    const resetPreferencesBtn = document.getElementById('reset-preferences-btn');
+    const saveStatus = document.getElementById('save-status');
+
+    // ===== Chat Tab Navigation =====
+    chatTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabId = tab.dataset.tab;
+        
+        chatTabs.forEach(t => t.classList.remove('active'));
+        chatTabContents.forEach(c => c.classList.remove('active'));
+        
+        tab.classList.add('active');
+        document.getElementById('chat-tab-' + tabId).classList.add('active');
+        
+        if (tabId === 'customize' && currentUser) {
+          loadPreferences();
+        }
+      });
+    });
 
     // ===== Navigation =====
     function navigateTo(pageName) {
@@ -2272,9 +3157,13 @@ function getFrontendHtml() {
     });
 
     // ===== Chat Functions =====
-    function renderChatMessage(role, content, thinking = null) {
+    function renderChatMessage(role, content, thinking = null, messageId = null, showActions = true) {
       const messageDiv = document.createElement('div');
       messageDiv.className = 'chat-message ' + role;
+      if (messageId) {
+        messageDiv.dataset.messageId = messageId;
+        messageIdMap.set(messageDiv, messageId);
+      }
       
       const avatar = document.createElement('div');
       avatar.className = 'chat-avatar';
@@ -2308,13 +3197,171 @@ function getFrontendHtml() {
       
       const bubble = document.createElement('div');
       bubble.className = 'chat-bubble';
-      bubble.textContent = content;
+      
+      // Render markdown for assistant messages
+      if (role === 'assistant') {
+        bubble.classList.add('markdown');
+        bubble.innerHTML = renderMarkdown(content);
+      } else {
+        bubble.textContent = content;
+      }
       
       contentWrapper.appendChild(bubble);
+      
+      // Add action buttons for assistant messages
+      if (role === 'assistant' && showActions && messageId) {
+        const actions = document.createElement('div');
+        actions.className = 'message-actions';
+        
+        // Copy button
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'message-action-btn';
+        copyBtn.innerHTML = '📋 Copy';
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(content).then(() => {
+            copyBtn.innerHTML = '✓ Copied!';
+            setTimeout(() => { copyBtn.innerHTML = '📋 Copy'; }, 2000);
+          });
+        };
+        actions.appendChild(copyBtn);
+        
+        // Regenerate button
+        const regenBtn = document.createElement('button');
+        regenBtn.className = 'message-action-btn';
+        regenBtn.innerHTML = '🔄 Redo';
+        regenBtn.onclick = () => regenerateMessage(messageId, messageDiv);
+        actions.appendChild(regenBtn);
+        
+        contentWrapper.appendChild(actions);
+        
+        // Branch navigation (will be populated if siblings exist)
+        const branchNav = document.createElement('div');
+        branchNav.className = 'branch-nav';
+        branchNav.style.display = 'none';
+        branchNav.dataset.messageId = messageId;
+        contentWrapper.appendChild(branchNav);
+        
+        // Check for siblings
+        checkSiblings(messageId, branchNav, bubble, contentWrapper);
+      }
+      
       messageDiv.appendChild(avatar);
       messageDiv.appendChild(contentWrapper);
       
       return messageDiv;
+    }
+
+    async function checkSiblings(messageId, branchNav, bubble, contentWrapper) {
+      try {
+        const res = await fetch('/api/chat/siblings?messageId=' + messageId);
+        const data = await res.json();
+        
+        if (data.ok && data.siblings && data.siblings.length > 1) {
+          branchNav.style.display = 'flex';
+          updateBranchNav(branchNav, data.siblings, data.currentIndex, bubble, contentWrapper);
+        }
+      } catch (err) {
+        console.error('Failed to check siblings:', err);
+      }
+    }
+
+    function updateBranchNav(branchNav, siblings, currentIndex, bubble, contentWrapper) {
+      branchNav.innerHTML = '';
+      
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'branch-nav-btn';
+      prevBtn.textContent = '◀';
+      prevBtn.disabled = currentIndex <= 0;
+      prevBtn.onclick = () => switchToSibling(siblings, currentIndex - 1, branchNav, bubble, contentWrapper);
+      
+      const counter = document.createElement('span');
+      counter.className = 'branch-counter';
+      counter.textContent = (currentIndex + 1) + ' / ' + siblings.length;
+      
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'branch-nav-btn';
+      nextBtn.textContent = '▶';
+      nextBtn.disabled = currentIndex >= siblings.length - 1;
+      nextBtn.onclick = () => switchToSibling(siblings, currentIndex + 1, branchNav, bubble, contentWrapper);
+      
+      branchNav.appendChild(prevBtn);
+      branchNav.appendChild(counter);
+      branchNav.appendChild(nextBtn);
+    }
+
+    function switchToSibling(siblings, newIndex, branchNav, bubble, contentWrapper) {
+      const sibling = siblings[newIndex];
+      if (!sibling) return;
+      
+      // Update bubble content
+      bubble.innerHTML = renderMarkdown(sibling.content);
+      
+      // Update branch nav
+      updateBranchNav(branchNav, siblings, newIndex, bubble, contentWrapper);
+      
+      // Update thinking if exists
+      const thinkingContent = contentWrapper.querySelector('.thinking-content');
+      if (thinkingContent) {
+        if (sibling.thinking) {
+          thinkingContent.textContent = sibling.thinking;
+          thinkingContent.parentElement.style.display = 'block';
+        } else {
+          thinkingContent.parentElement.style.display = 'none';
+        }
+      }
+      
+      // Update data attribute
+      branchNav.dataset.messageId = sibling.id;
+    }
+
+    async function regenerateMessage(messageId, messageDiv) {
+      clearError(errorChat);
+      
+      try {
+        sendChatBtn.disabled = true;
+        chatInput.disabled = true;
+        
+        // Show loading in the message
+        const bubble = messageDiv.querySelector('.chat-bubble');
+        const originalContent = bubble.innerHTML;
+        bubble.innerHTML = '<div class="chat-loading"><div class="chat-loading-dot"></div><div class="chat-loading-dot"></div><div class="chat-loading-dot"></div></div>';
+        
+        const res = await fetch('/api/chat/regenerate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId }),
+        });
+        
+        const data = await res.json();
+        
+        if (!res.ok || !data.ok) {
+          bubble.innerHTML = originalContent;
+          showError(errorChat, errorChatText, data.error || 'Failed to regenerate.');
+          return;
+        }
+        
+        // Update with new content
+        bubble.innerHTML = renderMarkdown(data.message);
+        
+        // Update thinking if exists
+        const thinkingContent = messageDiv.querySelector('.thinking-content');
+        if (thinkingContent && data.thinking) {
+          thinkingContent.textContent = data.thinking;
+        }
+        
+        // Refresh siblings
+        const branchNav = messageDiv.querySelector('.branch-nav');
+        if (branchNav) {
+          checkSiblings(data.messageId, branchNav, bubble, messageDiv.querySelector('div[style*="flex-direction: column"]'));
+        }
+        
+      } catch (err) {
+        console.error('Regenerate error:', err);
+        showError(errorChat, errorChatText, 'Failed to regenerate response.');
+      } finally {
+        sendChatBtn.disabled = false;
+        chatInput.disabled = false;
+      }
     }
 
     function clearChatEmpty() {
@@ -2347,6 +3394,8 @@ function getFrontendHtml() {
       
       chatMessages.appendChild(loadingDiv);
       chatMessages.scrollTop = chatMessages.scrollHeight;
+      
+      return loadingDiv;
     }
 
     function removeChatLoading() {
@@ -2356,7 +3405,8 @@ function getFrontendHtml() {
       }
     }
 
-    async function sendChatMessage() {
+    // Streaming message handler
+    async function sendChatMessageStreaming() {
       clearError(errorChat);
       
       if (!currentUser) {
@@ -2370,18 +3420,179 @@ function getFrontendHtml() {
         return;
       }
 
-      // Clear input and disable button
       chatInput.value = '';
       sendChatBtn.disabled = true;
       chatInput.disabled = true;
 
-      // Add user message to UI
       clearChatEmpty();
-      const userMessage = renderChatMessage('user', message);
+      const userMessage = renderChatMessage('user', message, null, null, false);
       chatMessages.appendChild(userMessage);
       chatMessages.scrollTop = chatMessages.scrollHeight;
 
-      // Show loading indicator
+      // Create streaming assistant message
+      const assistantDiv = document.createElement('div');
+      assistantDiv.className = 'chat-message assistant';
+      
+      const avatar = document.createElement('div');
+      avatar.className = 'chat-avatar';
+      avatar.textContent = '🤖';
+      
+      const contentWrapper = document.createElement('div');
+      contentWrapper.style.cssText = 'max-width: 70%; display: flex; flex-direction: column;';
+      
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble markdown';
+      bubble.innerHTML = '<span class="streaming-cursor"></span>';
+      
+      contentWrapper.appendChild(bubble);
+      assistantDiv.appendChild(avatar);
+      assistantDiv.appendChild(contentWrapper);
+      chatMessages.appendChild(assistantDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      let fullContent = '';
+      let fullThinking = '';
+      let messageId = null;
+
+      try {
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Stream request failed');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              try {
+                const parsed = JSON.parse(data);
+                
+                if (parsed.type === 'content') {
+                  fullContent += parsed.text;
+                  bubble.innerHTML = renderMarkdown(fullContent) + '<span class="streaming-cursor"></span>';
+                  chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+                else if (parsed.type === 'thinking') {
+                  fullThinking += parsed.text;
+                }
+                else if (parsed.type === 'done') {
+                  messageId = parsed.messageId;
+                }
+                else if (parsed.type === 'error') {
+                  throw new Error(parsed.error);
+                }
+              } catch (e) {
+                if (e.message !== 'Unexpected end of JSON input') {
+                  console.error('Parse error:', e);
+                }
+              }
+            }
+          }
+        }
+
+        // Remove streaming cursor and finalize
+        bubble.innerHTML = renderMarkdown(fullContent || "I couldn't generate a response.");
+        
+        // Add thinking toggle if we have thinking
+        if (fullThinking) {
+          const thinkingToggle = document.createElement('div');
+          thinkingToggle.className = 'thinking-toggle';
+          
+          const toggleBtn = document.createElement('button');
+          toggleBtn.className = 'thinking-toggle-btn';
+          toggleBtn.innerHTML = '<span class="thinking-toggle-icon">▶</span> Thinking';
+          
+          const thinkingContent = document.createElement('div');
+          thinkingContent.className = 'thinking-content';
+          thinkingContent.textContent = fullThinking;
+          
+          toggleBtn.addEventListener('click', () => {
+            toggleBtn.classList.toggle('active');
+            thinkingContent.classList.toggle('visible');
+          });
+          
+          thinkingToggle.appendChild(toggleBtn);
+          thinkingToggle.appendChild(thinkingContent);
+          contentWrapper.insertBefore(thinkingToggle, bubble);
+        }
+        
+        // Add action buttons
+        if (messageId) {
+          assistantDiv.dataset.messageId = messageId;
+          
+          const actions = document.createElement('div');
+          actions.className = 'message-actions';
+          
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'message-action-btn';
+          copyBtn.innerHTML = '📋 Copy';
+          copyBtn.onclick = () => {
+            navigator.clipboard.writeText(fullContent).then(() => {
+              copyBtn.innerHTML = '✓ Copied!';
+              setTimeout(() => { copyBtn.innerHTML = '📋 Copy'; }, 2000);
+            });
+          };
+          actions.appendChild(copyBtn);
+          
+          const regenBtn = document.createElement('button');
+          regenBtn.className = 'message-action-btn';
+          regenBtn.innerHTML = '🔄 Redo';
+          regenBtn.onclick = () => regenerateMessage(messageId, assistantDiv);
+          actions.appendChild(regenBtn);
+          
+          contentWrapper.appendChild(actions);
+        }
+
+      } catch (err) {
+        console.error('Stream error:', err);
+        bubble.innerHTML = '<span style="color: #ef4444;">Error: ' + escapeHtml(err.message) + '</span>';
+        showError(errorChat, errorChatText, err.message);
+      } finally {
+        sendChatBtn.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    // Non-streaming message handler
+    async function sendChatMessageNonStreaming() {
+      clearError(errorChat);
+      
+      if (!currentUser) {
+        showError(errorChat, errorChatText, "Please sign in to use the chat.");
+        return;
+      }
+
+      const message = chatInput.value.trim();
+      if (!message) {
+        showError(errorChat, errorChatText, "Please enter a message.");
+        return;
+      }
+
+      chatInput.value = '';
+      sendChatBtn.disabled = true;
+      chatInput.disabled = true;
+
+      clearChatEmpty();
+      const userMessage = renderChatMessage('user', message, null, null, false);
+      chatMessages.appendChild(userMessage);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
       showChatLoading();
 
       try {
@@ -2392,7 +3603,6 @@ function getFrontendHtml() {
         });
 
         const data = await res.json();
-
         removeChatLoading();
 
         if (res.status === 401) {
@@ -2405,8 +3615,7 @@ function getFrontendHtml() {
           return;
         }
 
-        // Add assistant message to UI with thinking if available
-        const assistantMessage = renderChatMessage('assistant', data.message, data.thinking);
+        const assistantMessage = renderChatMessage('assistant', data.message, data.thinking, data.messageId);
         chatMessages.appendChild(assistantMessage);
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -2421,6 +3630,15 @@ function getFrontendHtml() {
       }
     }
 
+    // Main send function that routes to streaming or non-streaming
+    async function sendChatMessage() {
+      if (streamingEnabled) {
+        await sendChatMessageStreaming();
+      } else {
+        await sendChatMessageNonStreaming();
+      }
+    }
+
     async function loadChatHistory() {
       if (!currentUser) return;
 
@@ -2431,12 +3649,10 @@ function getFrontendHtml() {
         const data = await res.json();
         if (!data.ok || !data.messages || data.messages.length === 0) return;
 
-        // Clear all existing messages (including empty state) before loading history
         chatMessages.innerHTML = '';
 
-        // Render messages with thinking if available
         data.messages.forEach(msg => {
-          const messageDiv = renderChatMessage(msg.role, msg.content, msg.thinking);
+          const messageDiv = renderChatMessage(msg.role, msg.content, msg.thinking, msg.id);
           chatMessages.appendChild(messageDiv);
         });
 
@@ -2459,12 +3675,19 @@ function getFrontendHtml() {
         });
 
         if (res.ok) {
-          chatMessages.innerHTML = '<div class="chat-empty"><div class="chat-empty-icon">💬</div><div>Start a conversation with the AI assistant</div><div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">Ask about speech recognition, text-to-speech, or general AI topics</div></div>';
+          chatMessages.innerHTML = '<div class="chat-empty"><div class="chat-empty-icon">💬</div><div>Start a conversation with the AI assistant</div><div style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">Responses support **markdown**, \`code\`, and syntax highlighting</div></div>';
         }
       } catch (err) {
         console.error("Failed to clear chat:", err);
       }
     }
+
+    // Toggle streaming mode
+    toggleStreamingBtn.addEventListener('click', () => {
+      streamingEnabled = !streamingEnabled;
+      toggleStreamingBtn.innerHTML = streamingEnabled ? '⚡ Streaming' : '📝 Standard';
+      toggleStreamingBtn.title = streamingEnabled ? 'Click to disable streaming' : 'Click to enable streaming';
+    });
 
     sendChatBtn.addEventListener('click', sendChatMessage);
     clearChatBtn.addEventListener('click', clearChat);
@@ -2473,6 +3696,65 @@ function getFrontendHtml() {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendChatMessage();
+      }
+    });
+
+    // ===== Preferences Functions =====
+    async function loadPreferences() {
+      if (!currentUser) return;
+      
+      try {
+        const res = await fetch('/api/user/preferences');
+        const data = await res.json();
+        
+        if (data.ok && data.preferences) {
+          customPromptInput.value = data.preferences.customSystemPrompt || '';
+        }
+      } catch (err) {
+        console.error('Failed to load preferences:', err);
+      }
+    }
+
+    async function savePreferences() {
+      if (!currentUser) return;
+      
+      saveStatus.textContent = 'Saving...';
+      saveStatus.className = 'save-status';
+      
+      try {
+        const res = await fetch('/api/user/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customSystemPrompt: customPromptInput.value.trim(),
+          }),
+        });
+        
+        const data = await res.json();
+        
+        if (data.ok) {
+          saveStatus.textContent = '✓ Saved!';
+          saveStatus.className = 'save-status success';
+        } else {
+          throw new Error(data.error || 'Failed to save');
+        }
+      } catch (err) {
+        saveStatus.textContent = '✗ Error: ' + err.message;
+        saveStatus.className = 'save-status error';
+      }
+      
+      setTimeout(() => {
+        saveStatus.textContent = '';
+        saveStatus.className = 'save-status';
+      }, 3000);
+    }
+
+    savePreferencesBtn.addEventListener('click', savePreferences);
+    
+    resetPreferencesBtn.addEventListener('click', () => {
+      if (confirm('Reset customization to default? This will clear your custom instructions.')) {
+        customPromptInput.value = '';
+        savePreferences();
       }
     });
 
