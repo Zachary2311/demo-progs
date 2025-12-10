@@ -619,15 +619,15 @@ async function handleChat(request, env) {
     const systemPrompt = await getSystemPrompt(env, user.id);
     
     // Build input array with conversation context (Responses API format)
-    // System prompt goes in 'instructions', conversation history in 'input'
+    // Include system prompt as developer message, then conversation history
     const inputMessages = [
+      { role: "developer", content: systemPrompt },
       ...history.map(msg => ({ role: msg.role, content: msg.content })),
       { role: "user", content: message },
     ];
 
     // Call GPT-OSS-120B model with Responses API format
     const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      instructions: systemPrompt,
       input: inputMessages,
     });
 
@@ -686,6 +686,9 @@ async function handleChat(request, env) {
           : extractTextFromContent(aiResponse.response);
       } else if (typeof aiResponse.output === 'string') {
         assistantMessage = aiResponse.output;
+      } else if (typeof aiResponse.output_text === 'string') {
+        // Responses API format
+        assistantMessage = aiResponse.output_text;
       }
     }
 
@@ -776,8 +779,9 @@ async function handleChatStream(request, env) {
   const systemPrompt = await getSystemPrompt(env, user.id);
   
   // Build input array with conversation context (Responses API format)
-  // System prompt goes in 'instructions', conversation history in 'input'
+  // Include system prompt as developer message, then conversation history
   const inputMessages = [
+    { role: "developer", content: systemPrompt },
     ...history.map(msg => ({ role: msg.role, content: msg.content })),
     { role: "user", content: message },
   ];
@@ -785,7 +789,6 @@ async function handleChatStream(request, env) {
   try {
     // Call with stream: true using Responses API format
     const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      instructions: systemPrompt,
       input: inputMessages,
       stream: true,
     });
@@ -798,12 +801,25 @@ async function handleChatStream(request, env) {
     // Use ReadableStream with pull-based approach to keep connection alive
     const readable = new ReadableStream({
       async start(controller) {
+        // Send initial keepalive to establish connection
+        controller.enqueue(encoder.encode(`: keepalive\n\n`));
+        
         try {
           const reader = aiStream.getReader();
+          let lastActivity = Date.now();
+          
+          // Keepalive interval to prevent connection timeout
+          const keepaliveInterval = setInterval(() => {
+            if (Date.now() - lastActivity > 15000) {
+              controller.enqueue(encoder.encode(`: keepalive\n\n`));
+            }
+          }, 10000);
           
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            
+            lastActivity = Date.now(); // Update activity timestamp
             
             // value could be a string chunk or Uint8Array
             let chunk = value;
@@ -811,7 +827,7 @@ async function handleChatStream(request, env) {
               chunk = decoder.decode(value, { stream: true });
             }
             
-            // Parse SSE data
+            // Parse SSE data - handle both Responses API and Chat Completions format
             const lines = chunk.split('\n');
             for (const line of lines) {
               if (line.startsWith('data: ')) {
@@ -821,9 +837,14 @@ async function handleChatStream(request, env) {
                 }
                 try {
                   const parsed = JSON.parse(data);
-                  if (parsed.response) {
+                  // Handle Responses API format (output_text)
+                  if (parsed.output_text) {
+                    fullContent += parsed.output_text;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.output_text })}\n\n`));
+                  }
+                  // Handle older response format
+                  else if (parsed.response) {
                     fullContent += parsed.response;
-                    // Forward to client
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
                   }
                   if (parsed.thinking) {
@@ -843,6 +864,9 @@ async function handleChatStream(request, env) {
             }
           }
           
+          // Clear the keepalive interval
+          clearInterval(keepaliveInterval);
+          
           // Save the complete message
           const assistantResult = await env.DB.prepare(
             `INSERT INTO chat_messages
@@ -861,6 +885,7 @@ async function handleChatStream(request, env) {
           
           controller.close();
         } catch (err) {
+          clearInterval(keepaliveInterval);
           console.error("Stream processing error:", err);
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
           controller.close();
@@ -940,8 +965,9 @@ async function handleChatRegenerate(request, env) {
   const systemPrompt = await getSystemPrompt(env, user.id);
   
   // Build input array with conversation context (Responses API format)
-  // System prompt goes in 'instructions', conversation history in 'input'
+  // Include system prompt as developer message, then conversation history
   const inputMessages = [
+    { role: "developer", content: systemPrompt },
     ...history.map(msg => ({ role: msg.role, content: msg.content })),
     { role: "user", content: userMessage },
   ];
@@ -949,7 +975,6 @@ async function handleChatRegenerate(request, env) {
   try {
     // Call GPT-OSS-120B model with Responses API format
     const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      instructions: systemPrompt,
       input: inputMessages,
     });
 
@@ -991,6 +1016,9 @@ async function handleChatRegenerate(request, env) {
         assistantMessage = typeof aiResponse.response === 'string' ? aiResponse.response : extractTextFromContent(aiResponse.response);
       } else if (typeof aiResponse.output === 'string') {
         assistantMessage = aiResponse.output;
+      } else if (typeof aiResponse.output_text === 'string') {
+        // Responses API format
+        assistantMessage = aiResponse.output_text;
       }
     }
 
