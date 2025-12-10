@@ -783,7 +783,7 @@ async function handleChatStream(request, env) {
   try {
     // Call with stream: true
     const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      messages: messages,
+      input: messages,
       stream: true,
     });
 
