@@ -1,0 +1,23 @@
+{
+  "name": "food-classifier-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers API for classifying food/drink requests using Workers AI",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "ai",
+    "classifier"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251205.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^3.114.15"
+  }
+}

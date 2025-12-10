@@ -1,0 +1,24 @@
+name = "food-classifier-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-08"
+
+[ai]
+binding = "AI"
+
+[[env.production.vars]]
+AUTH_ENABLED = false
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
