@@ -782,10 +782,25 @@ async function handleChatStream(request, env) {
 
   try {
     // Call with stream: true
-    const stream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      input: messages,
-      stream: true,
-    });
+    const streamResp = await env.AI.run(
+      "@cf/openai/gpt-oss-120b",
+      {
+        input: messages,
+      },
+      {
+        stream: true,
+        returnRawResponse: true,
+      },
+    );
+
+    // Workers AI returns a Response when returnRawResponse is true; we need the body stream
+    const stream = streamResp && typeof streamResp.body?.getReader === "function"
+      ? streamResp.body
+      : streamResp;
+
+    if (!stream || typeof stream.getReader !== "function") {
+      throw new Error("Upstream stream is unavailable");
+    }
 
     let fullContent = "";
     let fullThinking = "";
