@@ -2720,10 +2720,10 @@ function getFrontendHtml() {
       const highlighted = lang && hljs.getLanguage(lang)
         ? hljs.highlight(code, { language: lang }).value
         : hljs.highlightAuto(code).value;
-      return \`<div class="code-block-wrapper">
-        <button class="code-copy-btn" onclick="copyCodeBlock(this)">📋 Copy</button>
-        <pre><code class="hljs \${lang}">\${highlighted}</code></pre>
-      </div>\`;
+      return '<div class="code-block-wrapper">' +
+        '<button class="code-copy-btn" onclick="copyCodeBlock(this)">📋 Copy</button>' +
+        '<pre><code class="hljs ' + lang + '">' + highlighted + '</code></pre>' +
+      '</div>';
     };
     marked.use({ renderer });
 
