@@ -51,9 +51,6 @@ export default {
     if (pathname === "/api/chat" && request.method === "POST") {
       return handleChat(request, env);
     }
-    if (pathname === "/api/chat/stream" && request.method === "POST") {
-      return handleChatStream(request, env);
-    }
     if (pathname === "/api/chat/history" && request.method === "GET") {
       return handleChatHistory(request, env);
     }
@@ -726,186 +723,6 @@ async function handleChat(request, env) {
       },
       500,
     );
-  }
-}
-
-/* ---------- Streaming Chat Handler ---------- */
-
-async function handleChatStream(request, env) {
-  const user = await getSessionUser(env, request);
-  if (!user) {
-    return new Response(JSON.stringify({ ok: false, error: "Not authenticated" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return new Response(JSON.stringify({ ok: false, error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const message = String(body.message || "").trim();
-  const parentMessageId = body.parentMessageId || null;
-
-  if (!message) {
-    return new Response(JSON.stringify({ ok: false, error: "Message is required." }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const now = Date.now();
-
-  // Get conversation context
-  const history = await buildContextChain(env, user.id);
-
-  // Save user message
-  const userMsgResult = await env.DB.prepare(
-    `INSERT INTO chat_messages
-     (user_id, role, content, parent_message_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  )
-    .bind(user.id, "user", message, parentMessageId, now)
-    .run();
-  
-  const userMessageId = userMsgResult.meta.last_row_id;
-
-  const systemPrompt = await getSystemPrompt(env, user.id);
-  
-  // Build input using the official Responses API format
-  // Use instructions for system prompt, and build input as conversation string
-  const conversationContext = history.length > 0
-    ? history.map(msg => `${msg.role}: ${msg.content}`).join('\n') + '\n'
-    : '';
-  const inputText = conversationContext + `user: ${message}`;
-
-  try {
-    // Call with stream: true using Responses API format (simple string input)
-    const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      instructions: systemPrompt,
-      input: inputText,
-      stream: true,
-    });
-
-    let fullContent = "";
-    let fullThinking = "";
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-
-    // Use ReadableStream with pull-based approach to keep connection alive
-    const readable = new ReadableStream({
-      async start(controller) {
-        // Send initial keepalive to establish connection
-        controller.enqueue(encoder.encode(`: keepalive\n\n`));
-        
-        try {
-          const reader = aiStream.getReader();
-          let lastActivity = Date.now();
-          
-          // Keepalive interval to prevent connection timeout
-          const keepaliveInterval = setInterval(() => {
-            if (Date.now() - lastActivity > 15000) {
-              controller.enqueue(encoder.encode(`: keepalive\n\n`));
-            }
-          }, 10000);
-          
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            lastActivity = Date.now(); // Update activity timestamp
-            
-            // value could be a string chunk or Uint8Array
-            let chunk = value;
-            if (typeof value !== 'string') {
-              chunk = decoder.decode(value, { stream: true });
-            }
-            
-            // Parse SSE data - handle both Responses API and Chat Completions format
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') {
-                  continue;
-                }
-                try {
-                  const parsed = JSON.parse(data);
-                  // Handle Responses API format (output_text)
-                  if (parsed.output_text) {
-                    fullContent += parsed.output_text;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.output_text })}\n\n`));
-                  }
-                  // Handle older response format
-                  else if (parsed.response) {
-                    fullContent += parsed.response;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
-                  }
-                  if (parsed.thinking) {
-                    fullThinking += parsed.thinking;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', text: parsed.thinking })}\n\n`));
-                  }
-                } catch {
-                  // Raw text chunk
-                  fullContent += data;
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
-                }
-              } else if (line.trim() && !line.startsWith(':')) {
-                // Raw content without SSE prefix
-                fullContent += line;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: line })}\n\n`));
-              }
-            }
-          }
-          
-          // Clear the keepalive interval
-          clearInterval(keepaliveInterval);
-          
-          // Save the complete message
-          const assistantResult = await env.DB.prepare(
-            `INSERT INTO chat_messages
-             (user_id, role, content, model, thinking, parent_message_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
-          )
-            .bind(user.id, "assistant", fullContent.trim() || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", fullThinking || null, userMessageId, Date.now())
-            .run();
-          
-          // Send completion event with message ID
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
-            type: 'done', 
-            messageId: assistantResult.meta.last_row_id,
-            userMessageId: userMessageId
-          })}\n\n`));
-          
-          controller.close();
-        } catch (err) {
-          clearInterval(keepaliveInterval);
-          console.error("Stream processing error:", err);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
-          controller.close();
-        }
-      }
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-      },
-    });
-  } catch (err) {
-    console.error("Stream setup error:", err);
-    return new Response(JSON.stringify({ ok: false, error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
   }
 }
 
@@ -2104,21 +1921,6 @@ function getFrontendHtml() {
       text-align: center;
     }
     
-    /* Streaming cursor animation */
-    .streaming-cursor {
-      display: inline-block;
-      width: 2px;
-      height: 1em;
-      background: var(--accent);
-      margin-left: 2px;
-      animation: blink 1s infinite;
-      vertical-align: text-bottom;
-    }
-    @keyframes blink {
-      0%, 50% { opacity: 1; }
-      51%, 100% { opacity: 0; }
-    }
-    
     /* Chat Tabs */
     .chat-tabs {
       display: flex;
@@ -2585,9 +2387,6 @@ function getFrontendHtml() {
                     <p class="card-description">Ask questions and get markdown-formatted responses with code highlighting</p>
                   </div>
                   <div class="flex gap-2">
-                    <button id="toggle-streaming-btn" class="btn btn-ghost btn-small" title="Toggle streaming mode">
-                      ⚡ Streaming
-                    </button>
                     <button id="clear-chat-btn" class="btn btn-ghost btn-small">
                       Clear Chat
                     </button>
@@ -2669,7 +2468,6 @@ function getFrontendHtml() {
     let currentUser = null;
     let currentPage = 'home';
     let lastTtsUrl = null;
-    let streamingEnabled = true;
     let messageIdMap = new Map(); // Maps DOM elements to message IDs
 
     // ===== Markdown Configuration =====
@@ -2793,7 +2591,6 @@ function getFrontendHtml() {
     const clearChatBtn = document.getElementById('clear-chat-btn');
     const errorChat = document.getElementById('error-chat');
     const errorChatText = document.getElementById('error-chat-text');
-    const toggleStreamingBtn = document.getElementById('toggle-streaming-btn');
     
     // Chat tabs
     const chatTabs = document.querySelectorAll('.chat-tab');
@@ -3438,172 +3235,8 @@ function getFrontendHtml() {
       }
     }
 
-    // Streaming message handler
-    async function sendChatMessageStreaming() {
-      clearError(errorChat);
-      
-      if (!currentUser) {
-        showError(errorChat, errorChatText, "Please sign in to use the chat.");
-        return;
-      }
-
-      const message = chatInput.value.trim();
-      if (!message) {
-        showError(errorChat, errorChatText, "Please enter a message.");
-        return;
-      }
-
-      chatInput.value = '';
-      sendChatBtn.disabled = true;
-      chatInput.disabled = true;
-
-      clearChatEmpty();
-      const userMessage = renderChatMessage('user', message, null, null, false);
-      chatMessages.appendChild(userMessage);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-
-      // Create streaming assistant message
-      const assistantDiv = document.createElement('div');
-      assistantDiv.className = 'chat-message assistant';
-      
-      const avatar = document.createElement('div');
-      avatar.className = 'chat-avatar';
-      avatar.textContent = '🤖';
-      
-      const contentWrapper = document.createElement('div');
-      contentWrapper.style.cssText = 'max-width: 70%; display: flex; flex-direction: column;';
-      
-      const bubble = document.createElement('div');
-      bubble.className = 'chat-bubble markdown';
-      bubble.innerHTML = '<span class="streaming-cursor"></span>';
-      
-      contentWrapper.appendChild(bubble);
-      assistantDiv.appendChild(avatar);
-      assistantDiv.appendChild(contentWrapper);
-      chatMessages.appendChild(assistantDiv);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-
-      let fullContent = '';
-      let fullThinking = '';
-      let messageId = null;
-
-      try {
-        const response = await fetch('/api/chat/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message }),
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Stream request failed');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              try {
-                const parsed = JSON.parse(data);
-                
-                if (parsed.type === 'content') {
-                  fullContent += parsed.text;
-                  bubble.innerHTML = renderMarkdown(fullContent) + '<span class="streaming-cursor"></span>';
-                  chatMessages.scrollTop = chatMessages.scrollHeight;
-                }
-                else if (parsed.type === 'thinking') {
-                  fullThinking += parsed.text;
-                }
-                else if (parsed.type === 'done') {
-                  messageId = parsed.messageId;
-                }
-                else if (parsed.type === 'error') {
-                  throw new Error(parsed.error);
-                }
-              } catch (e) {
-                if (e.message !== 'Unexpected end of JSON input') {
-                  console.error('Parse error:', e);
-                }
-              }
-            }
-          }
-        }
-
-        // Remove streaming cursor and finalize
-        bubble.innerHTML = renderMarkdown(fullContent || "I couldn't generate a response.");
-        
-        // Add thinking toggle if we have thinking
-        if (fullThinking) {
-          const thinkingToggle = document.createElement('div');
-          thinkingToggle.className = 'thinking-toggle';
-          
-          const toggleBtn = document.createElement('button');
-          toggleBtn.className = 'thinking-toggle-btn';
-          toggleBtn.innerHTML = '<span class="thinking-toggle-icon">▶</span> Thinking';
-          
-          const thinkingContent = document.createElement('div');
-          thinkingContent.className = 'thinking-content';
-          thinkingContent.textContent = fullThinking;
-          
-          toggleBtn.addEventListener('click', () => {
-            toggleBtn.classList.toggle('active');
-            thinkingContent.classList.toggle('visible');
-          });
-          
-          thinkingToggle.appendChild(toggleBtn);
-          thinkingToggle.appendChild(thinkingContent);
-          contentWrapper.insertBefore(thinkingToggle, bubble);
-        }
-        
-        // Add action buttons
-        if (messageId) {
-          assistantDiv.dataset.messageId = messageId;
-          
-          const actions = document.createElement('div');
-          actions.className = 'message-actions';
-          
-          const copyBtn = document.createElement('button');
-          copyBtn.className = 'message-action-btn';
-          copyBtn.innerHTML = '📋 Copy';
-          copyBtn.onclick = () => {
-            navigator.clipboard.writeText(fullContent).then(() => {
-              copyBtn.innerHTML = '✓ Copied!';
-              setTimeout(() => { copyBtn.innerHTML = '📋 Copy'; }, 2000);
-            });
-          };
-          actions.appendChild(copyBtn);
-          
-          const regenBtn = document.createElement('button');
-          regenBtn.className = 'message-action-btn';
-          regenBtn.innerHTML = '🔄 Redo';
-          regenBtn.onclick = () => regenerateMessage(messageId, assistantDiv);
-          actions.appendChild(regenBtn);
-          
-          contentWrapper.appendChild(actions);
-        }
-
-      } catch (err) {
-        console.error('Stream error:', err);
-        bubble.innerHTML = '<span style="color: #ef4444;">Error: ' + escapeHtml(err.message) + '</span>';
-        showError(errorChat, errorChatText, err.message);
-      } finally {
-        sendChatBtn.disabled = false;
-        chatInput.disabled = false;
-        chatInput.focus();
-      }
-    }
-
-    // Non-streaming message handler
-    async function sendChatMessageNonStreaming() {
+    // Send chat message
+    async function sendChatMessage() {
       clearError(errorChat);
       
       if (!currentUser) {
@@ -3663,15 +3296,6 @@ function getFrontendHtml() {
       }
     }
 
-    // Main send function that routes to streaming or non-streaming
-    async function sendChatMessage() {
-      if (streamingEnabled) {
-        await sendChatMessageStreaming();
-      } else {
-        await sendChatMessageNonStreaming();
-      }
-    }
-
     async function loadChatHistory() {
       if (!currentUser) return;
 
@@ -3714,13 +3338,6 @@ function getFrontendHtml() {
         console.error("Failed to clear chat:", err);
       }
     }
-
-    // Toggle streaming mode
-    toggleStreamingBtn.addEventListener('click', () => {
-      streamingEnabled = !streamingEnabled;
-      toggleStreamingBtn.innerHTML = streamingEnabled ? '⚡ Streaming' : '📝 Standard';
-      toggleStreamingBtn.title = streamingEnabled ? 'Click to disable streaming' : 'Click to enable streaming';
-    });
 
     sendChatBtn.addEventListener('click', sendChatMessage);
     clearChatBtn.addEventListener('click', clearChat);
