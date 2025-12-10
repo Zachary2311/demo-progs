@@ -781,150 +781,89 @@ async function handleChatStream(request, env) {
   ];
 
   try {
-    // Call with stream: true - returns a ReadableStream
+    // Call with stream: true
     const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      input: messages,
+      messages: messages,
       stream: true,
     });
 
-    // Check if we got a valid stream
-    if (!aiStream || typeof aiStream.getReader !== 'function') {
-      // Fallback: if not a stream, treat as regular response
-      console.log("AI did not return a stream, falling back to non-streaming");
-      let responseText = "";
-      if (typeof aiStream === 'string') {
-        responseText = aiStream;
-      } else if (aiStream && typeof aiStream === 'object') {
-        responseText = aiStream.response || aiStream.output || JSON.stringify(aiStream);
-      }
-      
-      // Save and return as regular response
-      const assistantResult = await env.DB.prepare(
-        `INSERT INTO chat_messages
-         (user_id, role, content, model, thinking, parent_message_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-        .bind(user.id, "assistant", responseText || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", null, userMessageId, Date.now())
-        .run();
-      
-      // Return as SSE format for consistency
-      const responseData = `data: ${JSON.stringify({ type: 'content', text: responseText })}\n\ndata: ${JSON.stringify({ type: 'done', messageId: assistantResult.meta.last_row_id, userMessageId })}\n\n`;
-      return new Response(responseData, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-        },
-      });
-    }
-
     let fullContent = "";
     let fullThinking = "";
-
-    // Create a TransformStream to process and forward chunks
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
-    // Process the stream in the background
-    const processStream = async () => {
-      try {
-        // The AI stream is already a ReadableStream, we need to pipe through it
-        const reader = aiStream.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          // Decode the chunk
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
-          
-          // Process complete SSE messages from buffer
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ""; // Keep incomplete line in buffer
-          
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine) continue;
-            
-            if (trimmedLine.startsWith('data: ')) {
-              const data = trimmedLine.slice(6);
-              if (data === '[DONE]') {
-                continue;
-              }
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.response) {
-                  fullContent += parsed.response;
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
-                }
-                if (parsed.thinking) {
-                  fullThinking += parsed.thinking;
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', text: parsed.thinking })}\n\n`));
-                }
-              } catch {
-                // If not valid JSON, treat as raw text
-                if (data && data !== '[DONE]') {
-                  fullContent += data;
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
-                }
-              }
-            }
-          }
-        }
-        
-        // Process any remaining buffer
-        if (buffer.trim()) {
-          const trimmedLine = buffer.trim();
-          if (trimmedLine.startsWith('data: ')) {
-            const data = trimmedLine.slice(6);
-            if (data && data !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.response) {
-                  fullContent += parsed.response;
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
-                }
-              } catch {
-                fullContent += data;
-                await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
-              }
-            }
-          }
-        }
-        
-        // Save the complete message
-        const assistantResult = await env.DB.prepare(
-          `INSERT INTO chat_messages
-           (user_id, role, content, model, thinking, parent_message_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
-          .bind(user.id, "assistant", fullContent.trim() || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", fullThinking || null, userMessageId, Date.now())
-          .run();
-        
-        // Send completion event with message ID
-        await writer.write(encoder.encode(`data: ${JSON.stringify({ 
-          type: 'done', 
-          messageId: assistantResult.meta.last_row_id,
-          userMessageId: userMessageId
-        })}\n\n`));
-        
-      } catch (err) {
-        console.error("Stream processing error:", err);
-        await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
-      } finally {
+    // Use ReadableStream with pull-based approach to keep connection alive
+    const readable = new ReadableStream({
+      async start(controller) {
         try {
-          await writer.close();
-        } catch (e) {
-          // Writer may already be closed
+          const reader = aiStream.getReader();
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            // value could be a string chunk or Uint8Array
+            let chunk = value;
+            if (typeof value !== 'string') {
+              chunk = decoder.decode(value, { stream: true });
+            }
+            
+            // Parse SSE data
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') {
+                  continue;
+                }
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.response) {
+                    fullContent += parsed.response;
+                    // Forward to client
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
+                  }
+                  if (parsed.thinking) {
+                    fullThinking += parsed.thinking;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', text: parsed.thinking })}\n\n`));
+                  }
+                } catch {
+                  // Raw text chunk
+                  fullContent += data;
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
+                }
+              } else if (line.trim() && !line.startsWith(':')) {
+                // Raw content without SSE prefix
+                fullContent += line;
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: line })}\n\n`));
+              }
+            }
+          }
+          
+          // Save the complete message
+          const assistantResult = await env.DB.prepare(
+            `INSERT INTO chat_messages
+             (user_id, role, content, model, thinking, parent_message_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(user.id, "assistant", fullContent.trim() || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", fullThinking || null, userMessageId, Date.now())
+            .run();
+          
+          // Send completion event with message ID
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+            type: 'done', 
+            messageId: assistantResult.meta.last_row_id,
+            userMessageId: userMessageId
+          })}\n\n`));
+          
+          controller.close();
+        } catch (err) {
+          console.error("Stream processing error:", err);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
+          controller.close();
         }
       }
-    };
-
-    // Start processing without awaiting (runs in background)
-    processStream();
+    });
 
     return new Response(readable, {
       headers: {
@@ -2720,10 +2659,10 @@ function getFrontendHtml() {
       const highlighted = lang && hljs.getLanguage(lang)
         ? hljs.highlight(code, { language: lang }).value
         : hljs.highlightAuto(code).value;
-      return '<div class="code-block-wrapper">' +
-        '<button class="code-copy-btn" onclick="copyCodeBlock(this)">📋 Copy</button>' +
-        '<pre><code class="hljs ' + lang + '">' + highlighted + '</code></pre>' +
-      '</div>';
+      return \`<div class="code-block-wrapper">
+        <button class="code-copy-btn" onclick="copyCodeBlock(this)">📋 Copy</button>
+        <pre><code class="hljs \${lang}">\${highlighted}</code></pre>
+      </div>\`;
     };
     marked.use({ renderer });
 
@@ -3528,24 +3467,17 @@ function getFrontendHtml() {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
-          
-          // Process complete lines from buffer
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\\n');
 
           for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('data: ')) {
-              const data = trimmedLine.slice(6);
-              if (data === '[DONE]') continue;
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
               try {
                 const parsed = JSON.parse(data);
                 
@@ -3564,25 +3496,11 @@ function getFrontendHtml() {
                   throw new Error(parsed.error);
                 }
               } catch (e) {
-                // Only log if it's not a JSON parse error from incomplete data
-                if (e.name !== 'SyntaxError') {
-                  console.error('Stream parse error:', e);
-                  throw e;
+                if (e.message !== 'Unexpected end of JSON input') {
+                  console.error('Parse error:', e);
                 }
               }
             }
-          }
-        }
-        
-        // Process any remaining buffer
-        if (buffer.trim().startsWith('data: ')) {
-          const data = buffer.trim().slice(6);
-          if (data && data !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'content') fullContent += parsed.text;
-              else if (parsed.type === 'done') messageId = parsed.messageId;
-            } catch (e) { /* ignore */ }
           }
         }
 
