@@ -618,17 +618,17 @@ async function handleChat(request, env) {
   try {
     const systemPrompt = await getSystemPrompt(env, user.id);
     
-    // Build input array with conversation context (Responses API format)
-    // Include system prompt as developer message, then conversation history
-    const inputMessages = [
-      { role: "developer", content: systemPrompt },
-      ...history.map(msg => ({ role: msg.role, content: msg.content })),
-      { role: "user", content: message },
-    ];
+    // Build input using the official Responses API format
+    // Use instructions for system prompt, and build input as conversation string
+    const conversationContext = history.length > 0
+      ? history.map(msg => `${msg.role}: ${msg.content}`).join('\n') + '\n'
+      : '';
+    const inputText = conversationContext + `user: ${message}`;
 
     // Call GPT-OSS-120B model with Responses API format
     const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      input: inputMessages,
+      instructions: systemPrompt,
+      input: inputText,
     });
 
     console.log("AI Response structure:", JSON.stringify(aiResponse, null, 2));
@@ -778,18 +778,18 @@ async function handleChatStream(request, env) {
 
   const systemPrompt = await getSystemPrompt(env, user.id);
   
-  // Build input array with conversation context (Responses API format)
-  // Include system prompt as developer message, then conversation history
-  const inputMessages = [
-    { role: "developer", content: systemPrompt },
-    ...history.map(msg => ({ role: msg.role, content: msg.content })),
-    { role: "user", content: message },
-  ];
+  // Build input using the official Responses API format
+  // Use instructions for system prompt, and build input as conversation string
+  const conversationContext = history.length > 0
+    ? history.map(msg => `${msg.role}: ${msg.content}`).join('\n') + '\n'
+    : '';
+  const inputText = conversationContext + `user: ${message}`;
 
   try {
-    // Call with stream: true using Responses API format
+    // Call with stream: true using Responses API format (simple string input)
     const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      input: inputMessages,
+      instructions: systemPrompt,
+      input: inputText,
       stream: true,
     });
 
@@ -964,18 +964,18 @@ async function handleChatRegenerate(request, env) {
   
   const systemPrompt = await getSystemPrompt(env, user.id);
   
-  // Build input array with conversation context (Responses API format)
-  // Include system prompt as developer message, then conversation history
-  const inputMessages = [
-    { role: "developer", content: systemPrompt },
-    ...history.map(msg => ({ role: msg.role, content: msg.content })),
-    { role: "user", content: userMessage },
-  ];
+  // Build input using the official Responses API format
+  // Use instructions for system prompt, and build input as conversation string
+  const conversationContext = history.length > 0
+    ? history.map(msg => `${msg.role}: ${msg.content}`).join('\n') + '\n'
+    : '';
+  const inputText = conversationContext + `user: ${userMessage}`;
 
   try {
     // Call GPT-OSS-120B model with Responses API format
     const aiResponse = await env.AI.run("@cf/openai/gpt-oss-120b", {
-      input: inputMessages,
+      instructions: systemPrompt,
+      input: inputText,
     });
 
     let assistantMessage = "";
