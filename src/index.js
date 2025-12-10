@@ -781,25 +781,40 @@ async function handleChatStream(request, env) {
   ];
 
   try {
-    // Call with stream: true
-    const streamResp = await env.AI.run(
-      "@cf/openai/gpt-oss-120b",
-      {
-        input: messages,
-      },
-      {
-        stream: true,
-        returnRawResponse: true,
-      },
-    );
+    // Call with stream: true - returns a ReadableStream
+    const aiStream = await env.AI.run("@cf/openai/gpt-oss-120b", {
+      input: messages,
+      stream: true,
+    });
 
-    // Workers AI returns a Response when returnRawResponse is true; we need the body stream
-    const stream = streamResp && typeof streamResp.body?.getReader === "function"
-      ? streamResp.body
-      : streamResp;
-
-    if (!stream || typeof stream.getReader !== "function") {
-      throw new Error("Upstream stream is unavailable");
+    // Check if we got a valid stream
+    if (!aiStream || typeof aiStream.getReader !== 'function') {
+      // Fallback: if not a stream, treat as regular response
+      console.log("AI did not return a stream, falling back to non-streaming");
+      let responseText = "";
+      if (typeof aiStream === 'string') {
+        responseText = aiStream;
+      } else if (aiStream && typeof aiStream === 'object') {
+        responseText = aiStream.response || aiStream.output || JSON.stringify(aiStream);
+      }
+      
+      // Save and return as regular response
+      const assistantResult = await env.DB.prepare(
+        `INSERT INTO chat_messages
+         (user_id, role, content, model, thinking, parent_message_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(user.id, "assistant", responseText || "I couldn't generate a response.", "@cf/openai/gpt-oss-120b", null, userMessageId, Date.now())
+        .run();
+      
+      // Return as SSE format for consistency
+      const responseData = `data: ${JSON.stringify({ type: 'content', text: responseText })}\n\ndata: ${JSON.stringify({ type: 'done', messageId: assistantResult.meta.last_row_id, userMessageId })}\n\n`;
+      return new Response(responseData, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+        },
+      });
     }
 
     let fullContent = "";
@@ -811,25 +826,31 @@ async function handleChatStream(request, env) {
     const encoder = new TextEncoder();
 
     // Process the stream in the background
-    (async () => {
+    const processStream = async () => {
       try {
-        const reader = stream.getReader();
+        // The AI stream is already a ReadableStream, we need to pipe through it
+        const reader = aiStream.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
         
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           
-          // value could be a string chunk or an object
-          let chunk = value;
-          if (typeof value !== 'string') {
-            chunk = new TextDecoder().decode(value);
-          }
+          // Decode the chunk
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
           
-          // Parse SSE data
-          const lines = chunk.split('\n');
+          // Process complete SSE messages from buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
+          
           for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
+            const trimmedLine = line.trim();
+            if (!trimmedLine) continue;
+            
+            if (trimmedLine.startsWith('data: ')) {
+              const data = trimmedLine.slice(6);
               if (data === '[DONE]') {
                 continue;
               }
@@ -837,7 +858,6 @@ async function handleChatStream(request, env) {
                 const parsed = JSON.parse(data);
                 if (parsed.response) {
                   fullContent += parsed.response;
-                  // Forward to client
                   await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
                 }
                 if (parsed.thinking) {
@@ -845,14 +865,32 @@ async function handleChatStream(request, env) {
                   await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', text: parsed.thinking })}\n\n`));
                 }
               } catch {
-                // Raw text chunk
+                // If not valid JSON, treat as raw text
+                if (data && data !== '[DONE]') {
+                  fullContent += data;
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
+                }
+              }
+            }
+          }
+        }
+        
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          const trimmedLine = buffer.trim();
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6);
+            if (data && data !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.response) {
+                  fullContent += parsed.response;
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: parsed.response })}\n\n`));
+                }
+              } catch {
                 fullContent += data;
                 await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: data })}\n\n`));
               }
-            } else if (line.trim() && !line.startsWith(':')) {
-              // Raw content without SSE prefix
-              fullContent += line;
-              await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: line })}\n\n`));
             }
           }
         }
@@ -877,9 +915,16 @@ async function handleChatStream(request, env) {
         console.error("Stream processing error:", err);
         await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
       } finally {
-        await writer.close();
+        try {
+          await writer.close();
+        } catch (e) {
+          // Writer may already be closed
+        }
       }
-    })();
+    };
+
+    // Start processing without awaiting (runs in background)
+    processStream();
 
     return new Response(readable, {
       headers: {
@@ -3483,17 +3528,24 @@ function getFrontendHtml() {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        let buffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\\n');
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+          
+          // Process complete lines from buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
           for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const data = trimmedLine.slice(6);
+              if (data === '[DONE]') continue;
               try {
                 const parsed = JSON.parse(data);
                 
@@ -3512,11 +3564,25 @@ function getFrontendHtml() {
                   throw new Error(parsed.error);
                 }
               } catch (e) {
-                if (e.message !== 'Unexpected end of JSON input') {
-                  console.error('Parse error:', e);
+                // Only log if it's not a JSON parse error from incomplete data
+                if (e.name !== 'SyntaxError') {
+                  console.error('Stream parse error:', e);
+                  throw e;
                 }
               }
             }
+          }
+        }
+        
+        // Process any remaining buffer
+        if (buffer.trim().startsWith('data: ')) {
+          const data = buffer.trim().slice(6);
+          if (data && data !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.type === 'content') fullContent += parsed.text;
+              else if (parsed.type === 'done') messageId = parsed.messageId;
+            } catch (e) { /* ignore */ }
           }
         }
 
