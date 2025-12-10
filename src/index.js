@@ -589,8 +589,18 @@ async function handleChat(request, env) {
     }
     // Handle object response with various structures
     else if (aiResponse && typeof aiResponse === 'object') {
+      // Check for output array (new Cloudflare Workers AI format)
+      if (Array.isArray(aiResponse.output)) {
+        for (const item of aiResponse.output) {
+          if (item.type === "reasoning") {
+            reasoning = extractTextFromContent(item.content) || reasoning;
+          } else if (item.type === "message" && item.role === "assistant") {
+            assistantMessage = extractTextFromContent(item.content) || assistantMessage;
+          }
+        }
+      }
       // Check for direct message content
-      if (aiResponse.type === 'message' && aiResponse.role === 'assistant') {
+      else if (aiResponse.type === 'message' && aiResponse.role === 'assistant') {
         assistantMessage = extractTextFromContent(aiResponse.content);
       }
       // Check for nested results array
@@ -598,15 +608,13 @@ async function handleChat(request, env) {
         const result = aiResponse.results[0];
         assistantMessage = result.output || result.response || result.text || "";
       }
-      // Check for direct response/output fields
+      // Check for direct response/output fields (string output)
       else if (aiResponse.response) {
         assistantMessage = typeof aiResponse.response === 'string' 
           ? aiResponse.response 
           : extractTextFromContent(aiResponse.response);
-      } else if (aiResponse.output) {
-        assistantMessage = typeof aiResponse.output === 'string' 
-          ? aiResponse.output 
-          : extractTextFromContent(aiResponse.output);
+      } else if (typeof aiResponse.output === 'string') {
+        assistantMessage = aiResponse.output;
       }
     }
 
